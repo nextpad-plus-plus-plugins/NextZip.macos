@@ -60,6 +60,26 @@ public:
 	// Re-opens the archive on success. This powers "save back to archive".
 	bool updateFile(const std::string& entryPath, const std::string& localFile);
 
+	// Create a new archive from filesystem paths (files and/or folders, recursed).
+	// format ∈ 7z/zip/tar/gz/bz2/xz/wim; level 0..9 (0 = store). password empty =
+	// no encryption; encryptNames applies to 7z only; deleteAfter removes the
+	// inputs after a successful compress. Does NOT disturb any open archive.
+	bool compress(const std::string& destPath, const std::string& format, int level,
+	              const std::string& password, bool encryptNames,
+	              const std::vector<std::string>& inputs, bool deleteAfter);
+
+	// Remove entries (by index into entries()) from the currently-open archive,
+	// rewriting it in place and re-opening. Writable formats only.
+	bool deleteEntries(const std::vector<uint32_t>& indices);
+
+	// Is the named format one NineZip can write/create? (7z/zip/tar/gz/bz2/xz/wim)
+	static bool isWritableFormat(const std::string& format);
+
+	// Compute a file checksum. algo ∈ CRC32/MD5/SHA1/SHA256/SHA384/SHA512.
+	// Returns lowercase hex in hexOut. Pure helper — no engine needed.
+	static bool checksumFile(const std::string& path, const std::string& algo,
+	                         std::string& hexOut, std::string& err);
+
 	const std::string& archivePath() const { return m_archivePath; }
 
 private:

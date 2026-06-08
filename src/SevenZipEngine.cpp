@@ -27,6 +27,10 @@
 #include <cstdio>
 #include <algorithm>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <set>
+#include <CommonCrypto/CommonDigest.h>
 
 using namespace NWindows;
 
@@ -390,4 +394,324 @@ bool NineZipEngine::updateFile(const std::string& entryPath, const std::string& 
 	outArc.Release();
 	if (::rename(tmp.c_str(), arcPath.c_str()) != 0) { ::remove(tmp.c_str()); m_error = "could not replace archive"; return false; }
 	return open(arcPath);
+}
+
+// ── create-archive support ───────────────────────────────────────────────────
+namespace {
+struct CompItem {
+	std::string localPath;   // file/dir on disk
+	UString     arcPath;     // path to store inside the archive
+	bool        isDir = false;
+	UInt64      size = 0;
+	int64_t     mtime = 0;   // unix seconds
+};
+
+// Recursively collect a filesystem path into compress items (dirs first per level).
+void collectInto(const std::string& fsPath, const UString& arcName, std::vector<CompItem>& out) {
+	struct stat st;
+	if (::stat(fsPath.c_str(), &st) != 0) return;
+	if (S_ISDIR(st.st_mode)) {
+		CompItem d; d.localPath = fsPath; d.arcPath = arcName; d.isDir = true; d.mtime = st.st_mtime;
+		out.push_back(d);
+		DIR* dir = ::opendir(fsPath.c_str()); if (!dir) return;
+		std::vector<std::string> names;
+		for (struct dirent* e; (e = ::readdir(dir)); ) {
+			std::string n = e->d_name;
+			if (n == "." || n == "..") continue;
+			names.push_back(n);
+		}
+		::closedir(dir);
+		std::sort(names.begin(), names.end());
+		for (const std::string& n : names)
+			collectInto(fsPath + "/" + n, arcName + L"/" + GetUnicodeString(n.c_str()), out);
+	} else if (S_ISREG(st.st_mode)) {
+		CompItem f; f.localPath = fsPath; f.arcPath = arcName; f.isDir = false;
+		f.size = (UInt64)st.st_size; f.mtime = st.st_mtime;
+		out.push_back(f);
+	}
+}
+
+static void UnixToFileTime(int64_t unixSec, FILETIME& ft) {
+	uint64_t v = (uint64_t)((unixSec * 10000000LL) + 116444736000000000LL);
+	ft.dwLowDateTime = (DWORD)(v & 0xFFFFFFFF);
+	ft.dwHighDateTime = (DWORD)(v >> 32);
+}
+
+class CCreateCB Z7_final :
+	public IArchiveUpdateCallback,
+	public ICryptoGetTextPassword2,
+	public CMyUnknownImp
+{
+	Z7_IFACES_IMP_UNK_2(IArchiveUpdateCallback, ICryptoGetTextPassword2)
+	Z7_IFACE_COM7_IMP(IProgress)
+	const std::vector<CompItem>* _items = nullptr;
+public:
+	UString Password;
+	bool    PasswordIsDefined = false;
+	UInt64  NumErrors = 0;
+	void Init(const std::vector<CompItem>* items, const std::string& pw) {
+		_items = items; NumErrors = 0;
+		if (!pw.empty()) { Password = GetUnicodeString(pw.c_str()); PasswordIsDefined = true; }
+	}
+};
+
+Z7_COM7F_IMF(CCreateCB::SetTotal(UInt64))            { return S_OK; }
+Z7_COM7F_IMF(CCreateCB::SetCompleted(const UInt64*)) { return S_OK; }
+
+Z7_COM7F_IMF(CCreateCB::GetUpdateItemInfo(UInt32, Int32* newData, Int32* newProps, UInt32* indexInArchive)) {
+	// Every item is new with no source archive → newData=1, indexInArchive=-1.
+	// (newData=0 + no source makes handlers read a non-existent source item and
+	// crash.) Directories still report newData=1; we give them a VT_UI8 size of 0
+	// in GetProperty, which is what strict handlers like tar require.
+	*newData = 1; *newProps = 1; *indexInArchive = (UInt32)(Int32)-1;
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CCreateCB::GetProperty(UInt32 index, PROPID propID, PROPVARIANT* value)) {
+	NCOM::CPropVariant prop;
+	if (!_items || index >= _items->size()) { prop.Detach(value); return S_OK; }
+	const CompItem& it = (*_items)[index];
+	switch (propID) {
+		case kpidPath:  prop = it.arcPath.Ptr(); break;
+		case kpidIsDir: prop = it.isDir; break;
+		case kpidSize:  prop = (UInt64)(it.isDir ? 0 : it.size); break;   // always VT_UI8 (tar requires it)
+		case kpidAttrib: prop = (UInt32)(it.isDir ? 0x10 : 0x20); break;   // DIRECTORY / ARCHIVE
+		case kpidMTime: { FILETIME ft; UnixToFileTime(it.mtime, ft); prop = ft; break; }
+		default: break;
+	}
+	prop.Detach(value);
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CCreateCB::GetStream(UInt32 index, ISequentialInStream** inStream)) {
+	*inStream = NULL;
+	if (!_items || index >= _items->size()) return S_OK;
+	const CompItem& it = (*_items)[index];
+	if (it.isDir) return S_OK;                       // dirs have no data stream
+	CInFileStream* s = new CInFileStream;
+	CMyComPtr<ISequentialInStream> sp(s);
+	if (!s->Open(us2fs(GetUnicodeString(it.localPath.c_str())))) { NumErrors++; return S_OK; }
+	*inStream = sp.Detach();
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CCreateCB::SetOperationResult(Int32 op)) { if (op != 0) NumErrors++; return S_OK; }
+
+Z7_COM7F_IMF(CCreateCB::CryptoGetTextPassword2(Int32* passwordIsDefined, BSTR* password)) {
+	*passwordIsDefined = PasswordIsDefined ? 1 : 0;
+	return PasswordIsDefined ? StringToBstr(Password, password) : S_OK;
+}
+
+// Map a NineZip format name → 7-Zip format byte id (0 = not writable here).
+Byte writableFormatId(const std::string& fmt) {
+	if (fmt == "7z")                        return 0x07;
+	if (fmt == "zip")                       return 0x01;
+	if (fmt == "tar")                       return 0xEE;
+	if (fmt == "gzip" || fmt == "gz")       return 0xEF;
+	if (fmt == "bzip2"|| fmt == "bz2")      return 0x02;
+	if (fmt == "xz")                        return 0x0C;
+	if (fmt == "wim")                       return 0xE6;
+	return 0;
+}
+bool isSingleStreamFmt(const std::string& f) {
+	return f=="gzip"||f=="gz"||f=="bzip2"||f=="bz2"||f=="xz";
+}
+
+static void removePathRecursive(const std::string& p) {
+	struct stat st;
+	if (::lstat(p.c_str(), &st) != 0) return;
+	if (S_ISDIR(st.st_mode)) {
+		DIR* d = ::opendir(p.c_str());
+		if (d) {
+			for (struct dirent* e; (e = ::readdir(d)); ) {
+				std::string n = e->d_name;
+				if (n == "." || n == "..") continue;
+				removePathRecursive(p + "/" + n);
+			}
+			::closedir(d);
+		}
+		::rmdir(p.c_str());
+	} else {
+		::unlink(p.c_str());
+	}
+}
+} // namespace
+
+bool NineZipEngine::isWritableFormat(const std::string& format) {
+	return writableFormatId(format) != 0;
+}
+
+bool NineZipEngine::compress(const std::string& destPath, const std::string& format, int level,
+                             const std::string& password, bool encryptNames,
+                             const std::vector<std::string>& inputs, bool deleteAfter) {
+	m_error.clear();
+	if (!loadEngine()) return false;
+	const Byte fid = writableFormatId(format);
+	if (!fid) { m_error = "format is not writable: " + format; return false; }
+	if (inputs.empty()) { m_error = "no input files selected"; return false; }
+	if (level < 0) level = 0; if (level > 9) level = 9;
+
+	// Collect items (strip a trailing slash, store under the basename).
+	std::vector<CompItem> items;
+	for (std::string in : inputs) {
+		while (in.size() > 1 && in.back() == '/') in.pop_back();
+		std::string base = in;
+		if (size_t s = base.find_last_of('/'); s != std::string::npos) base = base.substr(s + 1);
+		if (base.empty()) { m_error = "invalid input path"; return false; }
+		collectInto(in, GetUnicodeString(base.c_str()), items);
+	}
+	if (items.empty()) { m_error = "nothing to compress"; return false; }
+	if (isSingleStreamFmt(format)) {
+		if (items.size() != 1 || items[0].isDir) {
+			m_error = "gzip/bzip2/xz can hold only a single file — pick one file or use 7z/zip/tar";
+			return false;
+		}
+	}
+
+	GUID clsid = FormatGUID(fid);
+	CMyComPtr<IOutArchive> outArc;
+	if (m_impl->createObject(&clsid, &IID_IOutArchive, (void**)&outArc) != S_OK || !outArc) {
+		m_error = "could not create archive object for " + format; return false;
+	}
+
+	// Compression level + encryption options.
+	{
+		CMyComPtr<ISetProperties> setp;
+		if (outArc->QueryInterface(IID_ISetProperties, (void**)&setp) == S_OK && setp) {
+			const wchar_t* names[4]; NCOM::CPropVariant vals[4]; unsigned n = 0;
+			names[n] = L"x";  vals[n] = (UInt32)level; n++;
+			if (encryptNames && format == "7z")           { names[n] = L"he"; vals[n] = true;      n++; }
+			if (!password.empty() && format == "zip")      { names[n] = L"em"; vals[n] = L"AES256"; n++; }
+			setp->SetProperties(names, (const PROPVARIANT*)vals, n);
+		}
+	}
+
+	const std::string tmp = destPath + ".nztmp";
+	{
+		COutFileStream* outSpec = new COutFileStream;
+		CMyComPtr<IOutStream> outStream(outSpec);
+		if (!outSpec->Create_ALWAYS(us2fs(GetUnicodeString(tmp.c_str())))) {
+			m_error = "cannot create output file: " + tmp; return false;
+		}
+		CCreateCB* cb = new CCreateCB;
+		CMyComPtr<IArchiveUpdateCallback> cbPtr(cb);
+		cb->Init(&items, password);
+		HRESULT hr = outArc->UpdateItems(outStream, (UInt32)items.size(), cbPtr);
+		outStream.Release();
+		if (hr != S_OK || cb->NumErrors) {
+			::remove(tmp.c_str());
+			char buf[80]; snprintf(buf, sizeof buf, "compression failed (0x%08X)", (unsigned)hr);
+			m_error = buf; return false;
+		}
+	}
+	if (::rename(tmp.c_str(), destPath.c_str()) != 0) { ::remove(tmp.c_str()); m_error = "could not write archive: " + destPath; return false; }
+
+	if (deleteAfter) for (const std::string& in : inputs) removePathRecursive(in);
+	return true;
+}
+
+// ── delete entries (rewrite archive without them) ────────────────────────────
+namespace {
+class CDeleteCB Z7_final :
+	public IArchiveUpdateCallback,
+	public CMyUnknownImp
+{
+	Z7_IFACES_IMP_UNK_1(IArchiveUpdateCallback)
+	Z7_IFACE_COM7_IMP(IProgress)
+	std::vector<UInt32> _map;   // new index → old index (kept items only)
+public:
+	UInt64 NumErrors = 0;
+	void Init(std::vector<UInt32> keepMap) { _map = std::move(keepMap); NumErrors = 0; }
+};
+Z7_COM7F_IMF(CDeleteCB::SetTotal(UInt64))            { return S_OK; }
+Z7_COM7F_IMF(CDeleteCB::SetCompleted(const UInt64*)) { return S_OK; }
+Z7_COM7F_IMF(CDeleteCB::GetUpdateItemInfo(UInt32 index, Int32* newData, Int32* newProps, UInt32* indexInArchive)) {
+	*newData = 0; *newProps = 0;
+	*indexInArchive = (index < _map.size()) ? _map[index] : (UInt32)(Int32)-1;   // all kept items
+	return S_OK;
+}
+Z7_COM7F_IMF(CDeleteCB::GetProperty(UInt32, PROPID, PROPVARIANT* value)) {
+	NCOM::CPropVariant prop; prop.Detach(value); return S_OK;   // kept items: copied from source
+}
+Z7_COM7F_IMF(CDeleteCB::GetStream(UInt32, ISequentialInStream** inStream)) { *inStream = NULL; return S_OK; }
+Z7_COM7F_IMF(CDeleteCB::SetOperationResult(Int32 op)) { if (op != 0) NumErrors++; return S_OK; }
+} // namespace
+
+bool NineZipEngine::deleteEntries(const std::vector<uint32_t>& indices) {
+	if (!m_impl->arc) { m_error = "no archive open"; return false; }
+	CMyComPtr<IOutArchive> outArc;
+	if (m_impl->arc->QueryInterface(IID_IOutArchive, (void**)&outArc) != S_OK || !outArc) {
+		m_error = "this archive format is read-only — cannot delete (e.g. RAR)"; return false;
+	}
+	std::set<uint32_t> del(indices.begin(), indices.end());
+	std::vector<UInt32> keep;
+	keep.reserve(m_entries.size());
+	for (uint32_t i = 0; i < (uint32_t)m_entries.size(); i++)
+		if (!del.count(i)) keep.push_back(i);
+	if (keep.size() == m_entries.size()) { m_error = "nothing to delete"; return false; }
+
+	const std::string tmp = m_archivePath + ".nztmp";
+	{
+		COutFileStream* outSpec = new COutFileStream;
+		CMyComPtr<IOutStream> outStream(outSpec);
+		if (!outSpec->Create_ALWAYS(us2fs(GetUnicodeString(tmp.c_str())))) { m_error = "cannot create temp output"; return false; }
+		CDeleteCB* cb = new CDeleteCB;
+		CMyComPtr<IArchiveUpdateCallback> cbPtr(cb);
+		cb->Init(keep);
+		HRESULT hr = outArc->UpdateItems(outStream, (UInt32)keep.size(), cbPtr);
+		outStream.Release();
+		if (hr != S_OK || cb->NumErrors) {
+			::remove(tmp.c_str());
+			if (hr == E_NOTIMPL) m_error = "this archive can't be modified (opened with warnings)";
+			else { char b[64]; snprintf(b, sizeof b, "delete failed (0x%08X)", (unsigned)hr); m_error = b; }
+			return false;
+		}
+	}
+	std::string arcPath = m_archivePath;
+	close(); outArc.Release();
+	if (::rename(tmp.c_str(), arcPath.c_str()) != 0) { ::remove(tmp.c_str()); m_error = "could not replace archive"; return false; }
+	return open(arcPath);
+}
+
+// ── checksums (CommonCrypto + table CRC32) ───────────────────────────────────
+bool NineZipEngine::checksumFile(const std::string& path, const std::string& algo,
+                                 std::string& hexOut, std::string& err) {
+	FILE* f = ::fopen(path.c_str(), "rb");
+	if (!f) { err = "cannot open: " + path; return false; }
+	std::vector<unsigned char> buf(1 << 16);
+	size_t r;
+	auto toHex = [](const unsigned char* d, size_t n, bool upper) {
+		static const char* lo = "0123456789abcdef"; static const char* hi = "0123456789ABCDEF";
+		const char* t = upper ? hi : lo; std::string s; s.reserve(n * 2);
+		for (size_t i = 0; i < n; i++) { s.push_back(t[d[i] >> 4]); s.push_back(t[d[i] & 0xF]); }
+		return s;
+	};
+
+	if (algo == "CRC32") {
+		static uint32_t T[256]; static bool init = false;
+		if (!init) { for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1); T[i] = c; } init = true; }
+		uint32_t crc = 0xFFFFFFFFu;
+		while ((r = ::fread(buf.data(), 1, buf.size(), f)) > 0)
+			for (size_t i = 0; i < r; i++) crc = T[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+		crc ^= 0xFFFFFFFFu;
+		unsigned char b[4] = { (unsigned char)(crc >> 24), (unsigned char)(crc >> 16), (unsigned char)(crc >> 8), (unsigned char)crc };
+		hexOut = toHex(b, 4, true);
+		::fclose(f); return true;
+	}
+#define NZ_HASH(NAME, CTX, INIT, UPD, FIN, LEN)                                  \
+	if (algo == NAME) {                                                          \
+		CTX c; INIT(&c);                                                         \
+		while ((r = ::fread(buf.data(), 1, buf.size(), f)) > 0) UPD(&c, buf.data(), (CC_LONG)r); \
+		unsigned char d[LEN]; FIN(d, &c);                                        \
+		hexOut = toHex(d, LEN, false); ::fclose(f); return true;                 \
+	}
+	NZ_HASH("MD5",    CC_MD5_CTX,    CC_MD5_Init,    CC_MD5_Update,    CC_MD5_Final,    CC_MD5_DIGEST_LENGTH)
+	NZ_HASH("SHA1",   CC_SHA1_CTX,   CC_SHA1_Init,   CC_SHA1_Update,   CC_SHA1_Final,   CC_SHA1_DIGEST_LENGTH)
+	NZ_HASH("SHA256", CC_SHA256_CTX, CC_SHA256_Init, CC_SHA256_Update, CC_SHA256_Final, CC_SHA256_DIGEST_LENGTH)
+	NZ_HASH("SHA384", CC_SHA512_CTX, CC_SHA384_Init, CC_SHA384_Update, CC_SHA384_Final, CC_SHA384_DIGEST_LENGTH)
+	NZ_HASH("SHA512", CC_SHA512_CTX, CC_SHA512_Init, CC_SHA512_Update, CC_SHA512_Final, CC_SHA512_DIGEST_LENGTH)
+#undef NZ_HASH
+	::fclose(f);
+	err = "unsupported checksum: " + algo;
+	return false;
 }
