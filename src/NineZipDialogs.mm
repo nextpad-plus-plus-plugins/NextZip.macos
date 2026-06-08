@@ -408,6 +408,8 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 @property (strong) NSTextField*   destField;
 @property (strong) NSButton*      subfolderCheck;
 @property (strong) NSPopUpButton* pathModePopup;
+@property (strong) NSPopUpButton* overwritePopup;
+@property (strong) NSButton*      eliminateRootCheck;
 @property (strong) NSTextField*   pwField;
 @end
 
@@ -441,6 +443,13 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 	[self.pathModePopup addItemsWithTitles:@[@"Full pathnames", @"No pathnames"]];
 	[v addArrangedSubview:nzRow(@[nzLabel(@"Path mode:"), self.pathModePopup])];
 
+	self.eliminateRootCheck = [NSButton checkboxWithTitle:@"Eliminate duplication of root folder" target:nil action:nil];
+	[v addArrangedSubview:self.eliminateRootCheck];
+
+	self.overwritePopup = nzPopup();
+	[self.overwritePopup addItemsWithTitles:@[@"Overwrite without prompt", @"Skip existing files", @"Auto rename"]];
+	[v addArrangedSubview:nzRow(@[nzLabel(@"Overwrite mode:"), self.overwritePopup])];
+
 	self.pwField = [NSTextField textFieldWithString:@""];
 	self.pwField.placeholderString = @"optional";
 	[self.pwField.widthAnchor constraintEqualToConstant:240].active = YES;
@@ -454,7 +463,7 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 	[btns.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16].active = YES;
 	[btns.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16].active = YES;
 
-	NSWindow* w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,540,230)
+	NSWindow* w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,310)
 		styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
 	w.title = @"Extract";
 	NSView* c = [[NSView alloc] initWithFrame:w.frame];
@@ -477,6 +486,8 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 	o.destDir = dest;
 	o.intoSubfolder = (self.subfolderCheck.state == NSControlStateValueOn);
 	o.pathMode = (int)self.pathModePopup.indexOfSelectedItem;
+	o.overwrite = (int)self.overwritePopup.indexOfSelectedItem;
+	o.eliminateRoot = (self.eliminateRootCheck.state == NSControlStateValueOn);
 	o.password = self.pwField.stringValue ?: @"";
 	return o;
 }

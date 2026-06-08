@@ -36,6 +36,8 @@
 @property (copy)   NSString* destDir;       // directory to extract into
 @property (assign) BOOL       intoSubfolder;// create a folder named after the archive
 @property (assign) int        pathMode;     // 0 = full paths, 1 = no paths (flatten)
+@property (assign) int        overwrite;    // 0 overwrite, 1 skip, 2 auto-rename
+@property (assign) BOOL       eliminateRoot;// drop a shared top-level folder
 @property (copy)   NSString* password;      // @"" = none
 @end
 

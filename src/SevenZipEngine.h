@@ -48,8 +48,11 @@ public:
 	// entry's relative path. Returns true on success. Optional password for
 	// encrypted archives. Used by the "Extract" command and by extract-to-temp
 	// (open a file from the archive in the editor).
+	// overwrite: 0 = overwrite, 1 = skip existing, 2 = auto-rename.
+	// eliminateRoot: if every extracted entry shares one top-level folder, drop it.
 	bool extract(const std::vector<uint32_t>& indices, const std::string& destDir,
-	             const std::string& password = std::string(), bool flatten = false);
+	             const std::string& password = std::string(), bool flatten = false,
+	             int overwrite = 0, bool eliminateRoot = false);
 
 	// Verify entries (decompress + CRC-check, no files written). indices empty = all.
 	bool test(const std::vector<uint32_t>& indices, const std::string& password = std::string());

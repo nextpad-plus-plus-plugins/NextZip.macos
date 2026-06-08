@@ -719,26 +719,29 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	if (!o) return;
 	NSString* dest = o.destDir;
 	if (o.intoSubfolder) dest = [dest stringByAppendingPathComponent:[[a lastPathComponent] stringByDeletingPathExtension]];
-	[self extractArchive:a to:dest password:o.password flatten:(o.pathMode == 1)];
+	[self extractArchive:a to:dest password:o.password flatten:(o.pathMode == 1)
+	           overwrite:o.overwrite eliminateRoot:o.eliminateRoot];
 }
 - (void)fsExtractHere:(id)s {
 	NSString* a = [self singleArchiveSelection]; if (!a) return;
-	[self extractArchive:a to:[a stringByDeletingLastPathComponent] password:@"" flatten:NO];
+	[self extractArchive:a to:[a stringByDeletingLastPathComponent] password:@"" flatten:NO overwrite:0 eliminateRoot:NO];
 }
 - (void)fsExtractToSub:(id)s {
 	NSString* a = [self singleArchiveSelection]; if (!a) return;
 	NSString* sub = [[a stringByDeletingLastPathComponent]
 	                  stringByAppendingPathComponent:[[a lastPathComponent] stringByDeletingPathExtension]];
-	[self extractArchive:a to:sub password:@"" flatten:NO];
+	[self extractArchive:a to:sub password:@"" flatten:NO overwrite:0 eliminateRoot:NO];
 }
-- (void)extractArchive:(NSString*)archivePath to:(NSString*)dest password:(NSString*)pw flatten:(BOOL)flatten {
+- (void)extractArchive:(NSString*)archivePath to:(NSString*)dest password:(NSString*)pw
+               flatten:(BOOL)flatten overwrite:(int)overwrite eliminateRoot:(BOOL)elim {
 	if (!archivePath.length || !dest.length) return;
 	NineZipEngine eng;                                  // fresh engine — don't disturb the open view
 	if (!eng.open(archivePath.UTF8String)) {
 		[self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return;
 	}
 	std::vector<uint32_t> all;                          // empty = everything
-	bool ok = eng.extract(all, dest.UTF8String, pw ? pw.UTF8String : "", flatten ? true : false);
+	bool ok = eng.extract(all, dest.UTF8String, pw ? pw.UTF8String : "", flatten ? true : false,
+	                      overwrite, elim ? true : false);
 	[self refreshFs];
 	if (ok) [self alert:@"Extract" info:[NSString stringWithFormat:@"Extracted to:\n%@", dest]];
 	else    [self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]];

@@ -201,6 +201,8 @@ public:
 	UString Password;
 	bool    PasswordIsDefined = false;
 	bool    Flatten = false;          // drop directory paths (extract basenames only)
+	int     Overwrite = 0;            // 0 overwrite, 1 skip, 2 auto-rename
+	UString StripPrefix;              // eliminate-root: drop this leading "X/" if present
 	UInt64  NumErrors = 0;
 	void Init(IInArchive* a, const FString& dir, const UString& fallback = UString()) {
 		_arc = a; _dir = dir; NName::NormalizeDirPathPrefix(_dir); _fallback = fallback; NumErrors = 0;
@@ -233,11 +235,38 @@ Z7_COM7F_IMF(CExtractCB::GetStream(UInt32 index, ISequentialOutStream** outStrea
 		if (s >= 0) _filePath = _filePath.Ptr((unsigned)(s + 1));
 		if (_filePath.IsEmpty()) return S_OK;
 	}
+	// Eliminate duplication of root folder: drop the shared "X/" prefix (and skip
+	// the bare "X" directory entry, which carries no trailing separator).
+	if (!StripPrefix.IsEmpty()) {
+		const unsigned pl = StripPrefix.Len();
+		if (_filePath.Len() + 1 == pl && wmemcmp(_filePath.Ptr(), StripPrefix.Ptr(), _filePath.Len()) == 0)
+			return S_OK;                             // the root folder entry itself
+		if (_filePath.Len() >= pl && wmemcmp(_filePath.Ptr(), StripPrefix.Ptr(), pl) == 0) {
+			_filePath = _filePath.Ptr(pl);
+			if (_filePath.IsEmpty()) return S_OK;
+		}
+	}
 	const int slash = _filePath.ReverseFind_PathSepar();
 	if (slash >= 0)
 		NDir::CreateComplexDir(_dir + us2fs(_filePath.Left((unsigned)slash)));
-	const FString full = _dir + us2fs(_filePath);
+	FString full = _dir + us2fs(_filePath);
 	if (_isDir) { NDir::CreateComplexDir(full); return S_OK; }
+
+	// Overwrite mode (only relevant when the target already exists).
+	struct stat _st;
+	if (::stat(full.Ptr(), &_st) == 0) {
+		if (Overwrite == 1) return S_OK;             // skip existing → no stream
+		if (Overwrite == 2) {                        // auto-rename: name (1).ext …
+			FString base = full, ext;
+			int dot = base.ReverseFind_Dot(), sep = base.ReverseFind_PathSepar();
+			if (dot > sep) { ext = base.Ptr((unsigned)dot); base.DeleteFrom((unsigned)dot); }
+			for (int n = 1; n < 100000; n++) {
+				char suff[24]; snprintf(suff, sizeof suff, " (%d)", n);
+				FString cand = base; cand += suff; cand += ext;
+				if (::stat(cand.Ptr(), &_st) != 0) { full = cand; break; }
+			}
+		}
+	}
 
 	COutFileStream* spec = new COutFileStream;
 	CMyComPtr<ISequentialOutStream> outLoc(spec);
@@ -260,7 +289,7 @@ Z7_COM7F_IMF(CExtractCB::CryptoGetTextPassword(BSTR* password)) {
 } // namespace
 
 bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::string& destDir,
-                            const std::string& password, bool flatten) {
+                            const std::string& password, bool flatten, int overwrite, bool eliminateRoot) {
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 
 	const FString fdest = us2fs(GetUnicodeString(destDir.c_str()));
@@ -274,7 +303,28 @@ bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::str
 	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
 	cb->Init(m_impl->arc, fdest, GetUnicodeString(baseName.c_str()));
 	cb->Flatten = flatten;
+	cb->Overwrite = overwrite;
 	if (!password.empty()) { cb->Password = GetUnicodeString(password.c_str()); cb->PasswordIsDefined = true; }
+
+	// Eliminate duplication of root folder: if every entry being extracted shares
+	// one top-level component, compute "<root>/" to strip in the callback.
+	if (eliminateRoot && !flatten) {
+		std::string root; bool first = true, ok = true;
+		auto firstComp = [](const std::string& p) {
+			size_t s = p.find('/'); return s == std::string::npos ? p : p.substr(0, s);
+		};
+		std::vector<uint32_t> all;
+		if (indices.empty()) { for (uint32_t i = 0; i < (uint32_t)m_entries.size(); i++) all.push_back(i); }
+		const std::vector<uint32_t>& sel = indices.empty() ? all : indices;
+		for (uint32_t i : sel) {
+			if (i >= m_entries.size() || m_entries[i].path.empty()) continue;
+			std::string c = firstComp(m_entries[i].path);
+			if (first) { root = c; first = false; }
+			else if (c != root) { ok = false; break; }
+		}
+		if (ok && !first && !root.empty())
+			cb->StripPrefix = GetUnicodeString((root + "/").c_str());
+	}
 
 	std::vector<uint32_t> sorted(indices);
 	std::sort(sorted.begin(), sorted.end());
