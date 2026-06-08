@@ -54,13 +54,21 @@ public:
 	// Verify entries (decompress + CRC-check, no files written). indices empty = all.
 	bool test(const std::vector<uint32_t>& indices, const std::string& password = std::string());
 
+	// Replace one entry's content with the bytes of localFile, rewriting the
+	// archive in place (keeps all other entries). Only works for writable formats
+	// (7z/zip/tar/gz/bz2/xz/wim) — returns false for read-only formats like RAR.
+	// Re-opens the archive on success. This powers "save back to archive".
+	bool updateFile(const std::string& entryPath, const std::string& localFile);
+
+	const std::string& archivePath() const { return m_archivePath; }
+
 private:
 	NineZipEngine(const NineZipEngine&) = delete;
 	NineZipEngine& operator=(const NineZipEngine&) = delete;
 	struct Impl;
 	Impl*                m_impl;
 	std::vector<NZEntry> m_entries;
-	std::string          m_enginePath, m_format, m_error;
+	std::string          m_enginePath, m_format, m_error, m_archivePath;
 };
 
 #endif // NINEZIP_SEVENZIPENGINE_H

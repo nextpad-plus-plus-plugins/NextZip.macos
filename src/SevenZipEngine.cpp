@@ -24,7 +24,9 @@
 
 #include <dlfcn.h>
 #include <cstring>
+#include <cstdio>
 #include <algorithm>
+#include <sys/stat.h>
 
 using namespace NWindows;
 
@@ -140,6 +142,7 @@ bool NineZipEngine::open(const std::string& archivePath) {
 	}
 
 	if (!m_impl->arc) { m_error = "not a recognized archive: " + archivePath; return false; }
+	m_archivePath = archivePath;
 
 	UInt32 num = 0;
 	m_impl->arc->GetNumberOfItems(&num);
@@ -233,9 +236,11 @@ bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::str
                             const std::string& password) {
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 
+	const FString fdest = us2fs(GetUnicodeString(destDir.c_str()));
+	NWindows::NFile::NDir::CreateComplexDir(fdest);   // ensure destDir exists (top-level files)
 	CExtractCB* cb = new CExtractCB;
 	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
-	cb->Init(m_impl->arc, us2fs(GetUnicodeString(destDir.c_str())));
+	cb->Init(m_impl->arc, fdest);
 	if (!password.empty()) { cb->Password = GetUnicodeString(password.c_str()); cb->PasswordIsDefined = true; }
 
 	std::vector<uint32_t> sorted(indices);
@@ -263,4 +268,95 @@ bool NineZipEngine::test(const std::vector<uint32_t>& indices, const std::string
 	if (hr != S_OK)    { m_error = "test failed"; return false; }
 	if (cb->NumErrors) { m_error = "test found errors (bad CRC / corrupt)"; return false; }
 	return true;
+}
+
+// ── update callback (replace one entry, copy the rest) ───────────────────────
+namespace {
+class CUpdateCB Z7_final :
+	public IArchiveUpdateCallback,
+	public CMyUnknownImp
+{
+	Z7_IFACES_IMP_UNK_1(IArchiveUpdateCallback)
+	Z7_IFACE_COM7_IMP(IProgress)
+	CMyComPtr<IInArchive> _arc;
+	UInt32      _target = 0;       // index of the entry being replaced
+	UString     _path;             // its path inside the archive
+	std::string _local;            // local file (UTF-8) with the new content
+public:
+	UInt64 NumErrors = 0;
+	void Init(IInArchive* a, UInt32 target, const UString& path, const std::string& local) {
+		_arc = a; _target = target; _path = path; _local = local; NumErrors = 0;
+	}
+};
+
+Z7_COM7F_IMF(CUpdateCB::SetTotal(UInt64))            { return S_OK; }
+Z7_COM7F_IMF(CUpdateCB::SetCompleted(const UInt64*)) { return S_OK; }
+
+Z7_COM7F_IMF(CUpdateCB::GetUpdateItemInfo(UInt32 index, Int32* newData, Int32* newProps, UInt32* indexInArchive)) {
+	if (index == _target) { *newData = 1; *newProps = 1; *indexInArchive = (UInt32)(Int32)-1; }   // replace
+	else                  { *newData = 0; *newProps = 0; *indexInArchive = index; }                // keep
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CUpdateCB::GetProperty(UInt32 index, PROPID propID, PROPVARIANT* value)) {
+	NCOM::CPropVariant prop;
+	if (index == _target) {
+		switch (propID) {
+			case kpidPath:  prop = _path.Ptr(); break;
+			case kpidIsDir: prop = false; break;
+			case kpidSize: {
+				struct stat st; if (::stat(_local.c_str(), &st) == 0) prop = (UInt64)st.st_size;
+				break; }
+			case kpidAttrib: prop = (UInt32)0x20; break;   // FILE_ATTRIBUTE_ARCHIVE
+			default: break;                                 // mtime etc. → handler default
+		}
+	}
+	prop.Detach(value);
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CUpdateCB::GetStream(UInt32 index, ISequentialInStream** inStream)) {
+	*inStream = NULL;
+	if (index != _target) return S_OK;   // kept items: data copied from archive, no stream
+	CInFileStream* s = new CInFileStream;
+	CMyComPtr<ISequentialInStream> sp(s);
+	if (!s->Open(us2fs(GetUnicodeString(_local.c_str())))) { NumErrors++; return E_FAIL; }
+	*inStream = sp.Detach();
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CUpdateCB::SetOperationResult(Int32 op)) { if (op != 0) NumErrors++; return S_OK; }
+} // namespace
+
+bool NineZipEngine::updateFile(const std::string& entryPath, const std::string& localFile) {
+	if (!m_impl->arc) { m_error = "no archive open"; return false; }
+	CMyComPtr<IOutArchive> outArc;
+	if (m_impl->arc->QueryInterface(IID_IOutArchive, (void**)&outArc) != S_OK || !outArc) {
+		m_error = "this archive format is read-only — cannot save back (e.g. RAR)"; return false;
+	}
+	int target = -1;
+	for (size_t i = 0; i < m_entries.size(); i++)
+		if (!m_entries[i].isDir && m_entries[i].path == entryPath) { target = (int)i; break; }
+	if (target < 0) { m_error = "entry not found: " + entryPath; return false; }
+
+	const std::string tmp = m_archivePath + ".nztmp";
+	{
+		COutFileStream* outSpec = new COutFileStream;
+		CMyComPtr<IOutStream> outStream(outSpec);
+		if (!outSpec->Create_ALWAYS(us2fs(GetUnicodeString(tmp.c_str())))) {
+			m_error = "cannot create temp output: " + tmp; return false;
+		}
+		CUpdateCB* cb = new CUpdateCB;
+		CMyComPtr<IArchiveUpdateCallback> cbPtr(cb);
+		cb->Init(m_impl->arc, (UInt32)target, GetUnicodeString(entryPath.c_str()), localFile);
+		HRESULT hr = outArc->UpdateItems(outStream, (UInt32)m_entries.size(), cbPtr);
+		outStream.Release();   // flush + close temp before we move it
+		if (hr != S_OK || cb->NumErrors) { ::remove(tmp.c_str()); m_error = "archive update failed"; return false; }
+	}
+	// Replace the original with the rebuilt archive, then re-open.
+	std::string arcPath = m_archivePath;
+	close();
+	outArc.Release();
+	if (::rename(tmp.c_str(), arcPath.c_str()) != 0) { ::remove(tmp.c_str()); m_error = "could not replace archive"; return false; }
+	return open(arcPath);
 }

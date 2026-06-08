@@ -47,6 +47,16 @@ extern "C" NPP_EXPORT const char* getName() { return PLUGIN_NAME; }
 
 extern "C" NPP_EXPORT FuncItem* getFuncsArray(int* nbF) { *nbF = NB_FUNC; return funcItem; }
 
-extern "C" NPP_EXPORT void beNotified(SCNotification* n) { (void)n; }
+extern "C" NPP_EXPORT void beNotified(SCNotification* n) {
+	if (!n) return;
+	if (n->nmhdr.code == NPPN_FILESAVED && g_controller) {
+		// Map the saved buffer to its path; if it's a file we extracted from an
+		// archive, write the edits back into the archive.
+		char path[4096]; path[0] = 0;
+		nppData._sendMessage(nppData._nppHandle, NPPM_GETFULLPATHFROMBUFFERID,
+		                     (uintptr_t)n->nmhdr.idFrom, (intptr_t)path);
+		if (path[0]) [g_controller handleFileSaved:[NSString stringWithUTF8String:path]];
+	}
+}
 
 extern "C" NPP_EXPORT intptr_t messageProc(uint32_t, uintptr_t, intptr_t) { return 1; }

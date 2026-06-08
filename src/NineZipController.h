@@ -17,5 +17,6 @@ struct NppData;
 - (void)showOpenPanel;                 // "Open Archive…" menu command
 - (void)openArchiveAtPath:(NSString*)path;
 - (void)openCurrentEditorFile;         // open the file in the active editor tab, if an archive
+- (void)handleFileSaved:(NSString*)path; // NPPN_FILESAVED → write a temp back into its archive
 - (void)showAbout;
 @end

@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <functional>
 #include <cctype>
+#include <map>
+#include <utility>
 
 extern "C" NppData* NineZip_HostData();
 
@@ -91,7 +93,8 @@ NSString* humanSize(uint64_t n) {
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
-@interface NineZipController () <NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate, NSPathControlDelegate>
+@interface NineZipController () <NSTableViewDataSource, NSTableViewDelegate,
+                                NSOutlineViewDataSource, NSOutlineViewDelegate, NSWindowDelegate>
 @end
 
 @implementation NineZipController {
@@ -106,6 +109,11 @@ NSString* humanSize(uint64_t n) {
 	BOOL                           _panelVisible;
 	NSTableView*                   _table;
 	NSPathControl*                 _breadcrumb;
+	NSOutlineView*                 _fsOutline;       // top pane: filesystem browser
+	NSArray<NSURL*>*               _fsRoots;
+	NSMutableDictionary*           _fsChildrenCache; // NSURL → NSArray<NSURL*>
+	// temp files opened in the editor → {archivePath, entryPath} for save-back
+	std::map<std::string, std::pair<std::string,std::string>> _openedTemps;
 }
 
 static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
@@ -133,11 +141,28 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 
 - (void)ensurePanel {
 	if (_panelView) return;
-	NSView* v = [[NSView alloc] initWithFrame:NSMakeRect(0,0,720,420)];
+	NSView* v = [[NSView alloc] initWithFrame:NSMakeRect(0,0,760,560)];
 	v.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;   // host stretches us
 	_panelView = v;
 
-	// toolbar strip
+	// ── TOP pane: filesystem browser (click an archive → loads it below) ──
+	NSScrollView* fsScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+	fsScroll.translatesAutoresizingMaskIntoConstraints = NO;
+	fsScroll.hasVerticalScroller = YES; fsScroll.autohidesScrollers = YES;
+	fsScroll.scrollerStyle = NSScrollerStyleOverlay; fsScroll.borderType = NSNoBorder;
+	_fsOutline = [[NSOutlineView alloc] initWithFrame:NSZeroRect];
+	NSTableColumn* fc = [[NSTableColumn alloc] initWithIdentifier:@"fs"];
+	fc.title = @"Disk"; [_fsOutline addTableColumn:fc]; _fsOutline.outlineTableColumn = fc;
+	_fsOutline.headerView = nil; _fsOutline.dataSource = self; _fsOutline.delegate = self;
+	_fsOutline.target = self; _fsOutline.doubleAction = @selector(onFsDoubleClick:);
+	fsScroll.documentView = _fsOutline;
+	_fsChildrenCache = [NSMutableDictionary dictionary];
+	_fsRoots = @[ [NSURL fileURLWithPath:NSHomeDirectory() isDirectory:YES],
+	              [NSURL fileURLWithPath:@"/" isDirectory:YES] ];
+
+	// ── BOTTOM pane: archive contents (toolbar + breadcrumb + table) ──
+	NSView* arc = [[NSView alloc] initWithFrame:NSZeroRect];
+	arc.translatesAutoresizingMaskIntoConstraints = NO;
 	NSStackView* tb = [NSStackView stackViewWithViews:@[
 		[self toolButton:@"Open archive…" symbol:@"folder" action:@selector(actOpen:)],
 		[self toolButton:@"Up" symbol:@"arrow.up" action:@selector(actUp:)],
@@ -147,50 +172,61 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	]];
 	tb.orientation = NSUserInterfaceLayoutOrientationHorizontal;
 	tb.spacing = 6; tb.translatesAutoresizingMaskIntoConstraints = NO;
-	[v addSubview:tb];
+	[arc addSubview:tb];
 
-	// breadcrumb
 	_breadcrumb = [[NSPathControl alloc] initWithFrame:NSZeroRect];
 	_breadcrumb.translatesAutoresizingMaskIntoConstraints = NO;
-	_breadcrumb.pathStyle = NSPathStyleStandard;
-	_breadcrumb.editable = NO;
+	_breadcrumb.pathStyle = NSPathStyleStandard; _breadcrumb.editable = NO;
 	_breadcrumb.target = self; _breadcrumb.action = @selector(actBreadcrumb:);
-	_breadcrumb.delegate = self;
-	[v addSubview:_breadcrumb];
+	[arc addSubview:_breadcrumb];
 
-	// table
 	NSScrollView* sc = [[NSScrollView alloc] initWithFrame:NSZeroRect];
 	sc.translatesAutoresizingMaskIntoConstraints = NO;
 	sc.hasVerticalScroller = YES; sc.hasHorizontalScroller = YES;
 	sc.autohidesScrollers = YES; sc.scrollerStyle = NSScrollerStyleOverlay; sc.borderType = NSNoBorder;
 	_table = [[NSTableView alloc] initWithFrame:NSZeroRect];
-	_table.usesAlternatingRowBackgroundColors = YES;
-	_table.allowsMultipleSelection = YES;
+	_table.usesAlternatingRowBackgroundColors = YES; _table.allowsMultipleSelection = YES;
 	struct { NSString* cid; NSString* title; CGFloat w; } cols[] = {
-		{@"name",@"Name",360}, {@"size",@"Size",90}, {@"pack",@"Packed",90},
+		{@"name",@"Name",340}, {@"size",@"Size",90}, {@"pack",@"Packed",90},
 		{@"crc",@"CRC",80}, {@"method",@"Method",110}, {@"modified",@"Modified",140},
 	};
 	for (auto& c : cols) {
-		NSTableColumn* tc = [[NSTableColumn alloc] initWithIdentifier:c.cid];
-		tc.title = c.title; tc.width = c.w;
+		NSTableColumn* tc = [[NSTableColumn alloc] initWithIdentifier:c.cid]; tc.title = c.title; tc.width = c.w;
 		[_table addTableColumn:tc];
 	}
 	_table.dataSource = self; _table.delegate = self;
 	_table.doubleAction = @selector(onDoubleClick:); _table.target = self;
 	sc.documentView = _table;
-	[v addSubview:sc];
-
+	[arc addSubview:sc];
 	[NSLayoutConstraint activateConstraints:@[
-		[tb.topAnchor constraintEqualToAnchor:v.topAnchor constant:8],
-		[tb.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:10],
-		[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:8],
-		[_breadcrumb.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:10],
-		[_breadcrumb.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-10],
-		[sc.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:6],
-		[sc.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
-		[sc.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
-		[sc.bottomAnchor constraintEqualToAnchor:v.bottomAnchor],
+		[tb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:6],
+		[tb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
+		[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:6],
+		[_breadcrumb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
+		[_breadcrumb.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor constant:-8],
+		[sc.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
+		[sc.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor],
+		[sc.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor],
+		[sc.bottomAnchor constraintEqualToAnchor:arc.bottomAnchor],
 	]];
+
+	// ── split the panel vertically: FS browser on top, archive below ──
+	NSSplitView* split = [[NSSplitView alloc] initWithFrame:v.bounds];
+	split.translatesAutoresizingMaskIntoConstraints = NO;
+	split.vertical = NO;                 // horizontal divider → stacked vertically
+	split.dividerStyle = NSSplitViewDividerStyleThin;
+	[split addArrangedSubview:fsScroll];
+	[split addArrangedSubview:arc];
+	[v addSubview:split];
+	[NSLayoutConstraint activateConstraints:@[
+		[split.topAnchor constraintEqualToAnchor:v.topAnchor],
+		[split.leadingAnchor constraintEqualToAnchor:v.leadingAnchor],
+		[split.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
+		[split.bottomAnchor constraintEqualToAnchor:v.bottomAnchor],
+	]];
+	[v layoutSubtreeIfNeeded];
+	[split setPosition:200 ofDividerAtIndex:0];   // ~200px filesystem pane on top
+	[_fsOutline reloadData];
 
 	// Register as a dockable panel (like AnalysePlugin/NppFTP); host strong-retains the view.
 	_panelHandle = (void*)hostMsg(NPPM_DMM_REGISTERPANEL, (uintptr_t)v, (intptr_t)"NineZip");
@@ -221,10 +257,11 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	else         [self showOpenPanel];
 }
 
-- (void)openArchiveAtPath:(NSString*)path {
+- (void)openArchiveAtPath:(NSString*)path { [self openArchiveAtPath:path quiet:NO]; }
+- (void)openArchiveAtPath:(NSString*)path quiet:(BOOL)quiet {
 	[self ensurePanel];
 	if (!_engine->open(path.UTF8String)) {
-		[self alert:@"Could not open archive" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
+		if (!quiet) [self alert:@"Could not open archive" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
 		return;
 	}
 	_archivePath = path;
@@ -332,6 +369,62 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	[self openEntryInEditor:n];
 }
 
+// ── top pane: filesystem browser ────────────────────────────────────────────
+- (NSArray<NSURL*>*)fsChildren:(NSURL*)url {
+	if (!url) return _fsRoots;
+	NSArray* cached = _fsChildrenCache[url];
+	if (cached) return cached;
+	NSArray<NSURL*>* items = [[NSFileManager defaultManager] contentsOfDirectoryAtURL:url
+		includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+		options:NSDirectoryEnumerationSkipsHiddenFiles error:nil] ?: @[];
+	items = [items sortedArrayUsingComparator:^NSComparisonResult(NSURL* a, NSURL* b) {
+		NSNumber* da = nil; [a getResourceValue:&da forKey:NSURLIsDirectoryKey error:nil];
+		NSNumber* db = nil; [b getResourceValue:&db forKey:NSURLIsDirectoryKey error:nil];
+		if (da.boolValue != db.boolValue) return da.boolValue ? NSOrderedAscending : NSOrderedDescending;
+		return [a.lastPathComponent localizedCaseInsensitiveCompare:b.lastPathComponent];
+	}];
+	_fsChildrenCache[url] = items;
+	return items;
+}
+- (NSInteger)outlineView:(NSOutlineView*)ov numberOfChildrenOfItem:(id)item { return (NSInteger)[self fsChildren:item].count; }
+- (id)outlineView:(NSOutlineView*)ov child:(NSInteger)i ofItem:(id)item { return [self fsChildren:item][(NSUInteger)i]; }
+- (BOOL)outlineView:(NSOutlineView*)ov isItemExpandable:(id)item {
+	NSNumber* d = nil; [(NSURL*)item getResourceValue:&d forKey:NSURLIsDirectoryKey error:nil]; return d.boolValue;
+}
+- (NSView*)outlineView:(NSOutlineView*)ov viewForTableColumn:(NSTableColumn*)col item:(id)item {
+	NSURL* url = item;
+	NSTableCellView* cell = [ov makeViewWithIdentifier:@"fscell" owner:self];
+	if (!cell) {
+		cell = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0,0,200,18)]; cell.identifier = @"fscell";
+		NSImageView* iv = [[NSImageView alloc] initWithFrame:NSMakeRect(0,0,16,16)];
+		iv.translatesAutoresizingMaskIntoConstraints = NO; [cell addSubview:iv]; cell.imageView = iv;
+		NSTextField* tf = [NSTextField labelWithString:@""];
+		tf.translatesAutoresizingMaskIntoConstraints = NO; tf.font = [NSFont systemFontOfSize:12];
+		tf.lineBreakMode = NSLineBreakByTruncatingTail; [cell addSubview:tf]; cell.textField = tf;
+		[NSLayoutConstraint activateConstraints:@[
+			[iv.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:2],
+			[iv.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+			[iv.widthAnchor constraintEqualToConstant:16],[iv.heightAnchor constraintEqualToConstant:16],
+			[tf.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:5],
+			[tf.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-3],
+			[tf.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+		]];
+	}
+	cell.textField.stringValue = url.lastPathComponent ?: url.path;
+	cell.imageView.image = [[NSWorkspace sharedWorkspace] iconForFile:url.path];
+	return cell;
+}
+- (void)onFsDoubleClick:(id)s {
+	NSInteger row = _fsOutline.clickedRow; if (row < 0) return;
+	NSURL* url = [_fsOutline itemAtRow:row];
+	NSNumber* dir = nil; [url getResourceValue:&dir forKey:NSURLIsDirectoryKey error:nil];
+	if (dir.boolValue) {
+		if ([_fsOutline isItemExpanded:url]) [_fsOutline collapseItem:url]; else [_fsOutline expandItem:url];
+		return;
+	}
+	[self openArchiveAtPath:url.path quiet:YES];   // load into the bottom pane; non-archives are ignored
+}
+
 // ── open a file from the archive in the editor (extract on the fly) ─────────────
 - (void)openEntryInEditor:(FMNode*)n {
 	if (n->entryIndex < 0) return;
@@ -345,6 +438,30 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	NSString* full = [base stringByAppendingPathComponent:rel];
 	NppData* d = NineZip_HostData();
 	if (d) d->_sendMessage(d->_nppHandle, NPPM_DOOPEN, 0, (intptr_t)full.UTF8String);
+	// Remember this temp ↔ archive entry so saving it writes back into the archive.
+	_openedTemps[full.UTF8String] = { _archivePath.UTF8String, _engine->entries()[n->entryIndex].path };
+}
+
+// ── save-back: editor saved a file we extracted → write it into the archive ──
+- (void)handleFileSaved:(NSString*)savedPath {
+	if (!savedPath) return;
+	auto it = _openedTemps.find(savedPath.UTF8String);
+	if (it == _openedTemps.end()) return;                 // not one of ours
+	const std::string arc = it->second.first, entry = it->second.second;
+	bool isCurrent = (_archivePath && arc == std::string(_archivePath.UTF8String) && _root);
+	bool ok = false;
+	if (isCurrent) {
+		ok = _engine->updateFile(entry, savedPath.UTF8String);   // re-opens internally
+		if (ok) { freeTree(_root); _root = buildTree(_engine->entries()); [self navigateTo:_root]; }
+		else    [self alert:@"Could not save back to archive"
+		               info:[NSString stringWithUTF8String:_engine->error().c_str()]];
+	} else {
+		NineZipEngine tmp;                                       // auto-resolves the engine dylib
+		ok = tmp.open(arc) && tmp.updateFile(entry, savedPath.UTF8String);
+		if (!ok) [self alert:@"Could not save back to archive"
+		              info:[NSString stringWithUTF8String:tmp.error().c_str()]];
+	}
+	if (ok) NSLog(@"[NineZip] saved '%s' back into %s", entry.c_str(), arc.c_str());
 }
 
 // ── toolbar: extract / test / info ──────────────────────────────────────────────
