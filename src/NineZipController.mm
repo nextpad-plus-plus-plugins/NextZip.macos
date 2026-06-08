@@ -177,6 +177,8 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	_breadcrumb = [[NSPathControl alloc] initWithFrame:NSZeroRect];
 	_breadcrumb.translatesAutoresizingMaskIntoConstraints = NO;
 	_breadcrumb.pathStyle = NSPathStyleStandard; _breadcrumb.editable = NO;
+	_breadcrumb.controlSize = NSControlSizeSmall;                 // compact breadcrumb
+	_breadcrumb.font = [NSFont systemFontOfSize:11];
 	_breadcrumb.target = self; _breadcrumb.action = @selector(actBreadcrumb:);
 	[arc addSubview:_breadcrumb];
 
@@ -201,9 +203,10 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	[NSLayoutConstraint activateConstraints:@[
 		[tb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:6],
 		[tb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
-		[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:6],
+		[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:5],
 		[_breadcrumb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
 		[_breadcrumb.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor constant:-8],
+		[_breadcrumb.heightAnchor constraintEqualToConstant:18],
 		[sc.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
 		[sc.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor],
 		[sc.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor],
@@ -414,15 +417,24 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	cell.imageView.image = [[NSWorkspace sharedWorkspace] iconForFile:url.path];
 	return cell;
 }
+// Single left-click on a file in the top pane → view its contents below.
+- (void)outlineViewSelectionDidChange:(NSNotification*)note {
+	if (note.object != _fsOutline) return;
+	NSInteger row = _fsOutline.selectedRow; if (row < 0) return;
+	NSURL* url = [_fsOutline itemAtRow:row];
+	NSNumber* dir = nil; [url getResourceValue:&dir forKey:NSURLIsDirectoryKey error:nil];
+	if (dir.boolValue) return;                                   // folder selection: do nothing
+	if (_archivePath && [url.path isEqualToString:_archivePath]) return;  // already shown
+	[self openArchiveAtPath:url.path quiet:YES];                 // non-archives are ignored quietly
+}
+// Double-click a folder in the top pane → expand/collapse.
 - (void)onFsDoubleClick:(id)s {
 	NSInteger row = _fsOutline.clickedRow; if (row < 0) return;
 	NSURL* url = [_fsOutline itemAtRow:row];
 	NSNumber* dir = nil; [url getResourceValue:&dir forKey:NSURLIsDirectoryKey error:nil];
 	if (dir.boolValue) {
 		if ([_fsOutline isItemExpanded:url]) [_fsOutline collapseItem:url]; else [_fsOutline expandItem:url];
-		return;
 	}
-	[self openArchiveAtPath:url.path quiet:YES];   // load into the bottom pane; non-archives are ignored
 }
 
 // ── open a file from the archive in the editor (extract on the fly) ─────────────
