@@ -17,15 +17,19 @@ API), so it handles every format 7-Zip supports.
   (breadcrumb, drill into folders, Extract/Test/Info).
 - ✅ Open a file from an archive in the editor (extract-on-the-fly to temp);
   saving it writes the edit back into the archive (writable formats only).
+- ✅ Transparent nested-archive descent: `.tar.gz` / `.tar.bz2` / `.tar.xz`
+  open straight to the inner tar's files, and save-back re-wraps outward.
 
 ### Next
-Add/Delete entries, nested-archive descent, drag-out-to-extract,
-create-new-archive, password + progress sheets.
+Add/Delete entries, drag-out-to-extract, create-new-archive,
+password + progress sheets.
 
 ## Formats
-- **Extract:** all 7-Zip formats — 7z, zip, tar, gz, bz2, xz, **rar / rar5**,
-  iso, cab, dmg, wim, arj, lzh, rpm, cpio, hfs/ext/ntfs images, etc.
-- **Create:** 7z, zip, tar, gz, bz2, xz, wim (the 7-Zip writable set).
+- **Extract / browse:** detection is by content signature (not extension), over
+  ~30 formats — 7z, zip, **rar / rar5**, tar, gz, bz2, xz, z, cab, xar, rpm,
+  deb, arj, lzh, chm, nsis, msi/compound, cpio, plus disk images iso, udf, dmg,
+  hfs, apfs, squashfs, cramfs, ext, wim, vhd, vhdx, vdi, vmdk, qcow.
+- **Create / save-back:** 7z, zip, tar, gz, bz2, xz, wim (the 7-Zip writable set).
 - **RAR is extraction-only** — the RAR compression algorithm is proprietary and
   cannot be created by anything but WinRAR (unRAR license). NineZip never offers
   "create RAR".
