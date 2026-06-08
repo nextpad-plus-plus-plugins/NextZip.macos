@@ -101,9 +101,16 @@ NSString* humanSize(uint64_t n) {
 	FMNode*                        _cwd;
 	std::vector<FMNode*>           _ancestors;   // root..cwd, parallel to breadcrumb items
 	NSString*                      _archivePath;
-	NSWindow*                      _window;
+	NSView*                        _panelView;     // dock-panel content (registered with the host)
+	void*                          _panelHandle;   // NPPM_DMM_REGISTERPANEL handle
+	BOOL                           _panelVisible;
 	NSTableView*                   _table;
 	NSPathControl*                 _breadcrumb;
+}
+
+static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
+	NppData* d = NineZip_HostData();
+	return d ? d->_sendMessage(d->_nppHandle, msg, w, l) : 0;
 }
 
 - (instancetype)initWithNpp:(const NppData*)npp {
@@ -124,15 +131,11 @@ NSString* humanSize(uint64_t n) {
 	return b;
 }
 
-- (void)ensureWindow {
-	if (_window) return;
-	_window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,940,560)
-		styleMask:(NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable)
-		backing:NSBackingStoreBuffered defer:NO];
-	_window.title = @"NineZip";
-	_window.releasedWhenClosed = NO;
-	_window.delegate = self;
-	NSView* v = _window.contentView;
+- (void)ensurePanel {
+	if (_panelView) return;
+	NSView* v = [[NSView alloc] initWithFrame:NSMakeRect(0,0,720,420)];
+	v.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;   // host stretches us
+	_panelView = v;
 
 	// toolbar strip
 	NSStackView* tb = [NSStackView stackViewWithViews:@[
@@ -188,10 +191,21 @@ NSString* humanSize(uint64_t n) {
 		[sc.trailingAnchor constraintEqualToAnchor:v.trailingAnchor],
 		[sc.bottomAnchor constraintEqualToAnchor:v.bottomAnchor],
 	]];
-	[_window center];
+
+	// Register as a dockable panel (like AnalysePlugin/NppFTP); host strong-retains the view.
+	_panelHandle = (void*)hostMsg(NPPM_DMM_REGISTERPANEL, (uintptr_t)v, (intptr_t)"NineZip");
 }
 
-- (void)show { [self ensureWindow]; [_window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+- (void)show {
+	[self ensurePanel];
+	if (_panelHandle) hostMsg(NPPM_DMM_SHOWPANEL, (uintptr_t)_panelHandle, 0);
+	_panelVisible = YES;
+}
+- (void)togglePanel {
+	[self ensurePanel];
+	_panelVisible = !_panelVisible;
+	if (_panelHandle) hostMsg(_panelVisible ? NPPM_DMM_SHOWPANEL : NPPM_DMM_HIDEPANEL, (uintptr_t)_panelHandle, 0);
+}
 
 // ── open ──────────────────────────────────────────────────────────────────────
 - (void)showOpenPanel {
@@ -208,7 +222,7 @@ NSString* humanSize(uint64_t n) {
 }
 
 - (void)openArchiveAtPath:(NSString*)path {
-	[self ensureWindow];
+	[self ensurePanel];
 	if (!_engine->open(path.UTF8String)) {
 		[self alert:@"Could not open archive" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
 		return;
@@ -216,7 +230,6 @@ NSString* humanSize(uint64_t n) {
 	_archivePath = path;
 	freeTree(_root);
 	_root = buildTree(_engine->entries());
-	_window.title = [NSString stringWithFormat:@"NineZip — %@", path.lastPathComponent];
 	[self navigateTo:_root];
 	[self show];
 }
@@ -391,8 +404,7 @@ NSString* humanSize(uint64_t n) {
 	NSAlert* a = [[NSAlert alloc] init];
 	a.messageText = msg; a.informativeText = info ?: @"";
 	[a addButtonWithTitle:@"OK"];
-	if (_window) [a beginSheetModalForWindow:_window completionHandler:nil]; else [a runModal];
+	NSWindow* w = _panelView.window;
+	if (w) [a beginSheetModalForWindow:w completionHandler:nil]; else [a runModal];
 }
-
-- (void)windowWillClose:(NSNotification*)n {}
 @end

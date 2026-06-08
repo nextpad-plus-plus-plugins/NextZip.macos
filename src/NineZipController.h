@@ -13,6 +13,7 @@ struct NppData;
 
 @interface NineZipController : NSObject
 - (instancetype)initWithNpp:(const NppData*)npp;
+- (void)togglePanel;                   // "Show NineZip" — register/show/hide the dock panel
 - (void)showOpenPanel;                 // "Open Archive…" menu command
 - (void)openArchiveAtPath:(NSString*)path;
 - (void)openCurrentEditorFile;         // open the file in the active editor tab, if an archive

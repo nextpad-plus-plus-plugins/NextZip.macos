@@ -10,7 +10,7 @@
 #include "NineZipController.h"
 
 static const char* PLUGIN_NAME = "NineZip";
-static const int   NB_FUNC = 4;
+static const int   NB_FUNC = 5;
 static FuncItem    funcItem[NB_FUNC];
 static NppData     nppData;
 static NineZipController* g_controller = nil;
@@ -23,6 +23,7 @@ static NineZipController* controller() {
 }
 
 // ── menu commands ─────────────────────────────────────────────────────────────
+static void cmdShowPanel()    { [controller() togglePanel]; }
 static void cmdOpenArchive()  { [controller() showOpenPanel]; }
 static void cmdOpenCurrent()  { [controller() openCurrentEditorFile]; }
 static void cmdAbout()        { [controller() showAbout]; }
@@ -30,14 +31,16 @@ static void cmdAbout()        { [controller() showAbout]; }
 // ── exports ───────────────────────────────────────────────────────────────────
 extern "C" NPP_EXPORT void setInfo(NppData data) {
 	nppData = data;
-	strlcpy(funcItem[0]._itemName, "Open Archive…",            NPP_MENU_ITEM_SIZE);
-	funcItem[0]._pFunc = cmdOpenArchive; funcItem[0]._init2Check = false; funcItem[0]._pShKey = nullptr;
-	strlcpy(funcItem[1]._itemName, "Open Current File as Archive", NPP_MENU_ITEM_SIZE);
-	funcItem[1]._pFunc = cmdOpenCurrent; funcItem[1]._init2Check = false; funcItem[1]._pShKey = nullptr;
-	strlcpy(funcItem[2]._itemName, "—",                        NPP_MENU_ITEM_SIZE);
-	funcItem[2]._pFunc = nullptr;        funcItem[2]._init2Check = false; funcItem[2]._pShKey = nullptr;
-	strlcpy(funcItem[3]._itemName, "About NineZip",            NPP_MENU_ITEM_SIZE);
-	funcItem[3]._pFunc = cmdAbout;       funcItem[3]._init2Check = false; funcItem[3]._pShKey = nullptr;
+	strlcpy(funcItem[0]._itemName, "Show NineZip Archive Manager", NPP_MENU_ITEM_SIZE);
+	funcItem[0]._pFunc = cmdShowPanel;   funcItem[0]._init2Check = false; funcItem[0]._pShKey = nullptr;
+	strlcpy(funcItem[1]._itemName, "Open Archive…",            NPP_MENU_ITEM_SIZE);
+	funcItem[1]._pFunc = cmdOpenArchive; funcItem[1]._init2Check = false; funcItem[1]._pShKey = nullptr;
+	strlcpy(funcItem[2]._itemName, "Open Current File as Archive", NPP_MENU_ITEM_SIZE);
+	funcItem[2]._pFunc = cmdOpenCurrent; funcItem[2]._init2Check = false; funcItem[2]._pShKey = nullptr;
+	strlcpy(funcItem[3]._itemName, "—",                        NPP_MENU_ITEM_SIZE);
+	funcItem[3]._pFunc = nullptr;        funcItem[3]._init2Check = false; funcItem[3]._pShKey = nullptr;
+	strlcpy(funcItem[4]._itemName, "About NineZip",            NPP_MENU_ITEM_SIZE);
+	funcItem[4]._pFunc = cmdAbout;       funcItem[4]._init2Check = false; funcItem[4]._pShKey = nullptr;
 }
 
 extern "C" NPP_EXPORT const char* getName() { return PLUGIN_NAME; }
