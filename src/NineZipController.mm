@@ -206,7 +206,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:5],
 		[_breadcrumb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
 		[_breadcrumb.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor constant:-8],
-		[_breadcrumb.heightAnchor constraintEqualToConstant:18],
+		[_breadcrumb.heightAnchor constraintEqualToConstant:16],
 		[sc.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
 		[sc.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor],
 		[sc.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor],
@@ -281,16 +281,24 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	// build ancestor chain root..cwd
 	_ancestors.clear();
 	for (FMNode* n = node; n; n = n->parent) _ancestors.insert(_ancestors.begin(), n);
-	// breadcrumb items
+	// breadcrumb items (small folder icon)
+	NSImage* folder = [[NSImage imageNamed:NSImageNameFolder] copy];
+	folder.size = NSMakeSize(13, 13);
 	NSMutableArray* items = [NSMutableArray array];
 	for (size_t i = 0; i < _ancestors.size(); i++) {
 		NSPathControlItem* it = [[NSPathControlItem alloc] init];
 		it.title = (i == 0) ? _archivePath.lastPathComponent
 		                    : [NSString stringWithUTF8String:_ancestors[i]->name.c_str()];
-		it.image = [NSImage imageNamed:NSImageNameFolder];
+		it.image = folder;
 		[items addObject:it];
 	}
 	_breadcrumb.pathItems = items;
+	// Standard-style NSPathControl draws via per-component cells that ignore the
+	// control's font/controlSize — shrink each one explicitly so the bar is compact.
+	for (NSPathComponentCell* c in _breadcrumb.pathComponentCells) {
+		c.controlSize = NSControlSizeSmall;
+		c.font = [NSFont systemFontOfSize:11];
+	}
 	[_table deselectAll:nil];
 	[_table reloadData];
 }
@@ -448,10 +456,17 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	}
 	NSString* rel  = [NSString stringWithUTF8String:_engine->entries()[n->entryIndex].path.c_str()];
 	NSString* full = [base stringByAppendingPathComponent:rel];
+	// Record this temp ↔ archive entry FIRST, then hand the host a pointer into the
+	// map node. NPPM_DOOPEN captures the raw const char* and dereferences it on the
+	// NEXT run-loop turn (dispatch_async), so an autoreleased -UTF8String buffer would
+	// already be freed → "The file name is invalid." std::map node strings are stable
+	// (never relocated; outlive this call), which is exactly what the host needs.
+	auto res = _openedTemps.insert_or_assign(std::string(full.UTF8String),
+	               std::make_pair(std::string(_archivePath.UTF8String),
+	                              _engine->entries()[n->entryIndex].path));
+	const char* stablePath = res.first->first.c_str();
 	NppData* d = NineZip_HostData();
-	if (d) d->_sendMessage(d->_nppHandle, NPPM_DOOPEN, 0, (intptr_t)full.UTF8String);
-	// Remember this temp ↔ archive entry so saving it writes back into the archive.
-	_openedTemps[full.UTF8String] = { _archivePath.UTF8String, _engine->entries()[n->entryIndex].path };
+	if (d) d->_sendMessage(d->_nppHandle, NPPM_DOOPEN, 0, (intptr_t)stablePath);
 }
 
 // ── save-back: editor saved a file we extracted → write it into the archive ──
