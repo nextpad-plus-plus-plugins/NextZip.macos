@@ -1,0 +1,20 @@
+/*
+ * NineZipController.h — the NineZip archive-manager window controller.
+ * Scaffold: opens an archive via NineZipEngine and lists its entries in a
+ * sortable NSTableView (the seed of the 7-Zip-File-Manager-style UI). Toolbar,
+ * breadcrumb navigation, descend-into-folders/nested-archives, extract, create,
+ * and drag-out come next.
+ *
+ * NineZip (Nextpad++ archive plugin) 2026 (GPL).
+ */
+#import <Cocoa/Cocoa.h>
+
+struct NppData;
+
+@interface NineZipController : NSObject
+- (instancetype)initWithNpp:(const NppData*)npp;
+- (void)showOpenPanel;                 // "Open Archive…" menu command
+- (void)openArchiveAtPath:(NSString*)path;
+- (void)openCurrentEditorFile;         // open the file in the active editor tab, if an archive
+- (void)showAbout;
+@end
