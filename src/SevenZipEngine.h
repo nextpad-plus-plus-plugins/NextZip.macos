@@ -44,6 +44,16 @@ public:
 	const std::string& format() const { return m_format; }   // detected format name
 	const std::string& error() const  { return m_error; }
 
+	// Extract the given entry indices (empty = all) into destDir, recreating each
+	// entry's relative path. Returns true on success. Optional password for
+	// encrypted archives. Used by the "Extract" command and by extract-to-temp
+	// (open a file from the archive in the editor).
+	bool extract(const std::vector<uint32_t>& indices, const std::string& destDir,
+	             const std::string& password = std::string());
+
+	// Verify entries (decompress + CRC-check, no files written). indices empty = all.
+	bool test(const std::vector<uint32_t>& indices, const std::string& password = std::string());
+
 private:
 	NineZipEngine(const NineZipEngine&) = delete;
 	NineZipEngine& operator=(const NineZipEngine&) = delete;

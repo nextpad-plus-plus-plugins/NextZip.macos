@@ -16,11 +16,15 @@
 #include "Common/StringConvert.h"
 #include "7zip/Common/FileStreams.h"
 #include "7zip/Archive/IArchive.h"
+#include "7zip/IPassword.h"
 #include "7zip/PropID.h"
 #include "Windows/PropVariant.h"
+#include "Windows/FileDir.h"
+#include "Windows/FileName.h"
 
 #include <dlfcn.h>
 #include <cstring>
+#include <algorithm>
 
 using namespace NWindows;
 
@@ -153,5 +157,110 @@ bool NineZipEngine::open(const std::string& archivePath) {
 		if (m_impl->arc->GetProperty(i, kpidMethod, &prop) == S_OK)    e.method = PropToUtf8(prop);
 		m_entries.push_back(e);
 	}
+	return true;
+}
+
+// ── extract callback (writes requested entries to disk) ──────────────────────
+namespace {
+using namespace NWindows::NFile;
+
+class CExtractCB Z7_final :
+	public IArchiveExtractCallback,
+	public ICryptoGetTextPassword,
+	public CMyUnknownImp
+{
+	Z7_IFACES_IMP_UNK_2(IArchiveExtractCallback, ICryptoGetTextPassword)
+	Z7_IFACE_COM7_IMP(IProgress)
+
+	CMyComPtr<IInArchive> _arc;
+	FString               _dir;        // normalized output dir prefix
+	UString               _filePath;   // current item's path inside the archive
+	bool                  _isDir = false;
+	CMyComPtr<ISequentialOutStream> _out;
+public:
+	UString Password;
+	bool    PasswordIsDefined = false;
+	UInt64  NumErrors = 0;
+	void Init(IInArchive* a, const FString& dir) {
+		_arc = a; _dir = dir; NName::NormalizeDirPathPrefix(_dir); NumErrors = 0;
+	}
+};
+
+Z7_COM7F_IMF(CExtractCB::SetTotal(UInt64))            { return S_OK; }
+Z7_COM7F_IMF(CExtractCB::SetCompleted(const UInt64*)) { return S_OK; }
+Z7_COM7F_IMF(CExtractCB::PrepareOperation(Int32))     { return S_OK; }
+
+Z7_COM7F_IMF(CExtractCB::GetStream(UInt32 index, ISequentialOutStream** outStream, Int32 askExtractMode)) {
+	*outStream = NULL; _out.Release();
+	{
+		NCOM::CPropVariant prop;
+		RINOK(_arc->GetProperty(index, kpidPath, &prop))
+		_filePath = (prop.vt == VT_BSTR && prop.bstrVal) ? UString(prop.bstrVal) : UString();
+	}
+	if (askExtractMode != NArchive::NExtract::NAskMode::kExtract) return S_OK;
+	{
+		NCOM::CPropVariant prop;
+		RINOK(_arc->GetProperty(index, kpidIsDir, &prop))
+		_isDir = (prop.vt == VT_BOOL && prop.boolVal != VARIANT_FALSE);
+	}
+	const int slash = _filePath.ReverseFind_PathSepar();
+	if (slash >= 0)
+		NDir::CreateComplexDir(_dir + us2fs(_filePath.Left((unsigned)slash)));
+	const FString full = _dir + us2fs(_filePath);
+	if (_isDir) { NDir::CreateComplexDir(full); return S_OK; }
+
+	COutFileStream* spec = new COutFileStream;
+	CMyComPtr<ISequentialOutStream> outLoc(spec);
+	if (!spec->Create_ALWAYS(full)) { NumErrors++; return E_ABORT; }
+	_out = outLoc;
+	*outStream = outLoc.Detach();
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CExtractCB::SetOperationResult(Int32 result)) {
+	if (result != NArchive::NExtract::NOperationResult::kOK) NumErrors++;
+	_out.Release();
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CExtractCB::CryptoGetTextPassword(BSTR* password)) {
+	if (!PasswordIsDefined) return E_ABORT;   // caller can set a password later
+	return StringToBstr(Password, password);
+}
+} // namespace
+
+bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::string& destDir,
+                            const std::string& password) {
+	if (!m_impl->arc) { m_error = "no archive open"; return false; }
+
+	CExtractCB* cb = new CExtractCB;
+	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
+	cb->Init(m_impl->arc, us2fs(GetUnicodeString(destDir.c_str())));
+	if (!password.empty()) { cb->Password = GetUnicodeString(password.c_str()); cb->PasswordIsDefined = true; }
+
+	std::vector<uint32_t> sorted(indices);
+	std::sort(sorted.begin(), sorted.end());
+	const UInt32* idx = sorted.empty() ? NULL : sorted.data();
+	const UInt32  num = sorted.empty() ? (UInt32)(Int32)-1 : (UInt32)sorted.size();
+
+	HRESULT hr = m_impl->arc->Extract(idx, num, BoolToInt(false), cbPtr);
+	if (hr != S_OK)       { m_error = "extract failed"; return false; }
+	if (cb->NumErrors)    { m_error = "extract completed with errors"; return false; }
+	return true;
+}
+
+bool NineZipEngine::test(const std::vector<uint32_t>& indices, const std::string& password) {
+	if (!m_impl->arc) { m_error = "no archive open"; return false; }
+	CExtractCB* cb = new CExtractCB;
+	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
+	cb->Init(m_impl->arc, FString());
+	if (!password.empty()) { cb->Password = GetUnicodeString(password.c_str()); cb->PasswordIsDefined = true; }
+	std::vector<uint32_t> sorted(indices);
+	std::sort(sorted.begin(), sorted.end());
+	const UInt32* idx = sorted.empty() ? NULL : sorted.data();
+	const UInt32  num = sorted.empty() ? (UInt32)(Int32)-1 : (UInt32)sorted.size();
+	HRESULT hr = m_impl->arc->Extract(idx, num, BoolToInt(true), cbPtr);   // testMode = true
+	if (hr != S_OK)    { m_error = "test failed"; return false; }
+	if (cb->NumErrors) { m_error = "test found errors (bad CRC / corrupt)"; return false; }
 	return true;
 }
