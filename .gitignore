@@ -9,4 +9,7 @@ deps/7zip/**/b/
 *.so
 *.dylib
 
+# internal design notes / investigation (local-only)
+/docs/
+
 .DS_Store
