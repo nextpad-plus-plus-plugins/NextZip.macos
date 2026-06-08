@@ -13,7 +13,8 @@ int main(int argc, char** argv) {
 		NineZipEngine e; e.setEnginePath(engine);
 		std::string dest = out + "/out." + fmt;
 		std::vector<std::string> inputs = { in };
-		if (!e.compress(dest, fmt, 5, "", false, inputs, false)) {
+		NineZipEngine::CompressOptions o; o.format = fmt; o.level = 5;
+		if (!e.compress(dest, o, inputs)) {
 			printf("FAIL compress %s: %s\n", fmt.c_str(), e.error().c_str()); return 1;
 		}
 		NineZipEngine r; r.setEnginePath(engine);

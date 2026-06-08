@@ -549,27 +549,36 @@ bool NineZipEngine::isWritableFormat(const std::string& format) {
 	return writableFormatId(format) != 0;
 }
 
-bool NineZipEngine::compress(const std::string& destPath, const std::string& format, int level,
-                             const std::string& password, bool encryptNames,
-                             const std::vector<std::string>& inputs, bool deleteAfter) {
+bool NineZipEngine::compress(const std::string& destPath, const CompressOptions& opt,
+                             const std::vector<std::string>& inputs) {
 	m_error.clear();
 	if (!loadEngine()) return false;
-	const Byte fid = writableFormatId(format);
-	if (!fid) { m_error = "format is not writable: " + format; return false; }
+	const Byte fid = writableFormatId(opt.format);
+	if (!fid) { m_error = "format is not writable: " + opt.format; return false; }
 	if (inputs.empty()) { m_error = "no input files selected"; return false; }
-	if (level < 0) level = 0; if (level > 9) level = 9;
+	int level = opt.level; if (level < 0) level = 0; if (level > 9) level = 9;
+	const bool is7z = (opt.format == "7z");
+	const bool ppmd = (opt.method == "PPMd");
 
-	// Collect items (strip a trailing slash, store under the basename).
+	// Collect items, honoring the path mode: relative = under the basename,
+	// full/absolute = under the path with any leading '/' stripped (archives
+	// cannot store a leading separator).
 	std::vector<CompItem> items;
 	for (std::string in : inputs) {
 		while (in.size() > 1 && in.back() == '/') in.pop_back();
-		std::string base = in;
-		if (size_t s = base.find_last_of('/'); s != std::string::npos) base = base.substr(s + 1);
-		if (base.empty()) { m_error = "invalid input path"; return false; }
-		collectInto(in, GetUnicodeString(base.c_str()), items);
+		std::string root;
+		if (opt.pathMode == 0) {                                  // relative → basename
+			root = in;
+			if (size_t s = root.find_last_of('/'); s != std::string::npos) root = root.substr(s + 1);
+		} else {                                                  // full / absolute
+			root = in;
+			while (!root.empty() && root.front() == '/') root.erase(root.begin());
+		}
+		if (root.empty()) { m_error = "invalid input path"; return false; }
+		collectInto(in, GetUnicodeString(root.c_str()), items);
 	}
 	if (items.empty()) { m_error = "nothing to compress"; return false; }
-	if (isSingleStreamFmt(format)) {
+	if (isSingleStreamFmt(opt.format)) {
 		if (items.size() != 1 || items[0].isDir) {
 			m_error = "gzip/bzip2/xz can hold only a single file — pick one file or use 7z/zip/tar";
 			return false;
@@ -579,18 +588,54 @@ bool NineZipEngine::compress(const std::string& destPath, const std::string& for
 	GUID clsid = FormatGUID(fid);
 	CMyComPtr<IOutArchive> outArc;
 	if (m_impl->createObject(&clsid, &IID_IOutArchive, (void**)&outArc) != S_OK || !outArc) {
-		m_error = "could not create archive object for " + format; return false;
+		m_error = "could not create archive object for " + opt.format; return false;
 	}
 
-	// Compression level + encryption options.
+	// Build the property list exactly as the 7-Zip GUI does (UpdateGUI.cpp).
 	{
 		CMyComPtr<ISetProperties> setp;
 		if (outArc->QueryInterface(IID_ISetProperties, (void**)&setp) == S_OK && setp) {
-			const wchar_t* names[4]; NCOM::CPropVariant vals[4]; unsigned n = 0;
-			names[n] = L"x";  vals[n] = (UInt32)level; n++;
-			if (encryptNames && format == "7z")           { names[n] = L"he"; vals[n] = true;      n++; }
-			if (!password.empty() && format == "zip")      { names[n] = L"em"; vals[n] = L"AES256"; n++; }
-			setp->SetProperties(names, (const PROPVARIANT*)vals, n);
+			std::vector<UString> nameStore;
+			std::vector<NCOM::CPropVariant> vals;
+			auto addUInt = [&](const std::string& nm, UInt32 v) {
+				nameStore.push_back(GetUnicodeString(nm.c_str()));
+				NCOM::CPropVariant p; p = (UInt32)v; vals.push_back(p);
+			};
+			auto addStr = [&](const std::string& nm, const std::string& v) {
+				nameStore.push_back(GetUnicodeString(nm.c_str()));
+				NCOM::CPropVariant p; p = GetUnicodeString(v.c_str()).Ptr(); vals.push_back(p);
+			};
+			addUInt("x", (UInt32)level);
+			if (level > 0) {                                      // store mode → no method/dict/word
+				const std::string pfx = is7z ? "0" : "";
+				if (!opt.method.empty()) addStr(is7z ? std::string("0") : std::string("m"), opt.method);
+				if (opt.dict > 0)        addStr(pfx + (ppmd ? "mem" : "d"), std::to_string(opt.dict) + "b");
+				if (opt.wordSize > 0)    addUInt(pfx + (ppmd ? "o" : "fb"), opt.wordSize);
+			}
+			if (!opt.solid.empty())          addStr("s", opt.solid);
+			if (opt.threads > 0)             addUInt("mt", (UInt32)opt.threads);
+			if (!opt.memusePercent.empty())  addStr("memuse", opt.memusePercent);
+			if (!opt.encMethod.empty())      addStr("em", opt.encMethod);
+			if (opt.encryptNames && is7z)    addStr("he", "on");
+			// advanced "Parameters" box: whitespace-separated name=value tokens
+			{
+				std::string tok; std::string p = opt.extraParams;
+				p.push_back(' ');
+				for (char c : p) {
+					if (c == ' ' || c == '\t' || c == '\n') {
+						if (!tok.empty()) {
+							size_t eq = tok.find('=');
+							if (eq != std::string::npos) addStr(tok.substr(0, eq), tok.substr(eq + 1));
+							else                         addStr(tok, "");
+							tok.clear();
+						}
+					} else tok.push_back(c);
+				}
+			}
+			std::vector<const wchar_t*> names; names.reserve(nameStore.size());
+			for (const UString& u : nameStore) names.push_back(u.Ptr());
+			if (!names.empty())
+				setp->SetProperties(names.data(), (const PROPVARIANT*)vals.data(), (UInt32)names.size());
 		}
 	}
 
@@ -603,7 +648,7 @@ bool NineZipEngine::compress(const std::string& destPath, const std::string& for
 		}
 		CCreateCB* cb = new CCreateCB;
 		CMyComPtr<IArchiveUpdateCallback> cbPtr(cb);
-		cb->Init(&items, password);
+		cb->Init(&items, opt.password);
 		HRESULT hr = outArc->UpdateItems(outStream, (UInt32)items.size(), cbPtr);
 		outStream.Release();
 		if (hr != S_OK || cb->NumErrors) {
@@ -614,7 +659,7 @@ bool NineZipEngine::compress(const std::string& destPath, const std::string& for
 	}
 	if (::rename(tmp.c_str(), destPath.c_str()) != 0) { ::remove(tmp.c_str()); m_error = "could not write archive: " + destPath; return false; }
 
-	if (deleteAfter) for (const std::string& in : inputs) removePathRecursive(in);
+	if (opt.deleteAfter) for (const std::string& in : inputs) removePathRecursive(in);
 	return true;
 }
 

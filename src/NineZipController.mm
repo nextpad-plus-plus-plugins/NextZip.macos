@@ -678,17 +678,35 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 }
 - (void)performAdd:(NZAddOptions*)o inputs:(NSArray<NSString*>*)inputs {
 	if (!o.archivePath.length || inputs.count == 0) return;
+	if (o.createSFX)
+		[self alert:@"Add to Archive" info:@"SFX archives aren’t supported in the macOS build — that option was ignored."];
+	if (o.splitVolume.length)
+		[self alert:@"Add to Archive" info:@"Splitting to volumes isn’t supported yet — that value was ignored."];
 	if ([[NSFileManager defaultManager] fileExistsAtPath:o.archivePath]) {
 		NSAlert* a = [[NSAlert alloc] init];
 		a.messageText = @"Overwrite existing archive?";
-		a.informativeText = o.archivePath;
+		a.informativeText = [NSString stringWithFormat:@"%@\n\n(Adding into an existing archive is not yet supported.)", o.archivePath];
 		[a addButtonWithTitle:@"Overwrite"]; [a addButtonWithTitle:@"Cancel"];
 		if ([a runModal] != NSAlertFirstButtonReturn) return;
 	}
+	NineZipEngine::CompressOptions opt;
+	opt.format        = o.format.UTF8String;
+	opt.level         = o.level;
+	opt.method        = o.method.length ? o.method.UTF8String : "";
+	opt.dict          = o.dict;
+	opt.wordSize      = o.wordSize;
+	opt.solid         = o.solid.length ? o.solid.UTF8String : "";
+	opt.threads       = o.threads;
+	opt.memusePercent = o.memusePercent.length ? o.memusePercent.UTF8String : "";
+	opt.password      = o.password.length ? o.password.UTF8String : "";
+	opt.encMethod     = o.encMethod.length ? o.encMethod.UTF8String : "";
+	opt.encryptNames  = o.encryptNames;
+	opt.pathMode      = o.pathMode;
+	opt.deleteAfter   = o.deleteAfter;
+	opt.extraParams   = o.extraParams.length ? o.extraParams.UTF8String : "";
 	std::vector<std::string> ins;
 	for (NSString* p in inputs) if (p.length) ins.push_back(p.UTF8String);
-	bool ok = _engine->compress(o.archivePath.UTF8String, o.format.UTF8String, o.level,
-	                            o.password.UTF8String, o.encryptNames, ins, o.deleteAfter);
+	bool ok = _engine->compress(o.archivePath.UTF8String, opt, ins);
 	if (ok) { [self refreshFs];
 		[self alert:@"Add to Archive" info:[NSString stringWithFormat:@"Created:\n%@", o.archivePath]]; }
 	else    [self alert:@"Add to Archive failed" info:[NSString stringWithUTF8String:_engine->error().c_str()]];

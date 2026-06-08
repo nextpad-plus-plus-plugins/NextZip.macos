@@ -60,13 +60,30 @@ public:
 	// Re-opens the archive on success. This powers "save back to archive".
 	bool updateFile(const std::string& entryPath, const std::string& localFile);
 
-	// Create a new archive from filesystem paths (files and/or folders, recursed).
-	// format ∈ 7z/zip/tar/gz/bz2/xz/wim; level 0..9 (0 = store). password empty =
-	// no encryption; encryptNames applies to 7z only; deleteAfter removes the
-	// inputs after a successful compress. Does NOT disturb any open archive.
-	bool compress(const std::string& destPath, const std::string& format, int level,
-	              const std::string& password, bool encryptNames,
-	              const std::vector<std::string>& inputs, bool deleteAfter);
+	// Full set of "Add to Archive" options, mapped 1:1 onto the 7-Zip property
+	// names the Windows GUI uses (see UpdateGUI.cpp): x / 0|m / 0d|d / 0fb|fb /
+	// s / mt / em / he / memuse. Empty/0 fields mean "let the engine default".
+	struct CompressOptions {
+		std::string format = "7z";   // 7z|zip|tar|gzip|bzip2|xz
+		int         level = 5;       // 0,1,3,5,7,9
+		std::string method;          // e.g. LZMA2/LZMA/PPMd/BZip2/Deflate ("" = default)
+		uint64_t    dict = 0;        // dictionary size in bytes (0 = auto)
+		uint32_t    wordSize = 0;    // word size / PPMd order (0 = auto)
+		std::string solid;           // "" auto | "off" | "on" | "<bytes>b"
+		int         threads = 0;     // CPU threads (0 = auto)
+		std::string memusePercent;   // "" | "NN%"
+		std::string password;        // "" = no encryption
+		std::string encMethod;       // "" | "AES256" | "ZipCrypto"
+		bool        encryptNames = false;  // 7z header encryption (he)
+		int         pathMode = 0;    // 0 relative, 1 full, 2 absolute
+		bool        deleteAfter = false;
+		std::string extraParams;     // raw "name=value …" appended verbatim
+	};
+
+	// Create a NEW archive from filesystem paths (files and/or folders, recursed)
+	// using the given options. Does NOT disturb any open archive.
+	bool compress(const std::string& destPath, const CompressOptions& opt,
+	              const std::vector<std::string>& inputs);
 
 	// Remove entries (by index into entries()) from the currently-open archive,
 	// rewriting it in place and re-opening. Writable formats only.
