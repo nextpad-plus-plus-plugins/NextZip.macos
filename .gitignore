@@ -2,9 +2,9 @@
 build/
 build-*/
 
-# 7-Zip engine build artifacts (rebuildable via deps/build-7z-engine.sh)
+# 7-Zip source + engine: fetched & built by deps/build-7z-engine.sh, not vendored
+deps/7zip/
 deps/7z.so
-deps/7zip/**/b/
 *.o
 *.so
 *.dylib
