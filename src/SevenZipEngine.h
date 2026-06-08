@@ -49,7 +49,7 @@ public:
 	// encrypted archives. Used by the "Extract" command and by extract-to-temp
 	// (open a file from the archive in the editor).
 	bool extract(const std::vector<uint32_t>& indices, const std::string& destDir,
-	             const std::string& password = std::string());
+	             const std::string& password = std::string(), bool flatten = false);
 
 	// Verify entries (decompress + CRC-check, no files written). indices empty = all.
 	bool test(const std::vector<uint32_t>& indices, const std::string& password = std::string());

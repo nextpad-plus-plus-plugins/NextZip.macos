@@ -200,6 +200,7 @@ class CExtractCB Z7_final :
 public:
 	UString Password;
 	bool    PasswordIsDefined = false;
+	bool    Flatten = false;          // drop directory paths (extract basenames only)
 	UInt64  NumErrors = 0;
 	void Init(IInArchive* a, const FString& dir, const UString& fallback = UString()) {
 		_arc = a; _dir = dir; NName::NormalizeDirPathPrefix(_dir); _fallback = fallback; NumErrors = 0;
@@ -225,6 +226,12 @@ Z7_COM7F_IMF(CExtractCB::GetStream(UInt32 index, ISequentialOutStream** outStrea
 		NCOM::CPropVariant prop;
 		RINOK(_arc->GetProperty(index, kpidIsDir, &prop))
 		_isDir = (prop.vt == VT_BOOL && prop.boolVal != VARIANT_FALSE);
+	}
+	if (Flatten) {                                   // "No pathnames": basenames only
+		if (_isDir) return S_OK;                     // skip directory entries entirely
+		int s = _filePath.ReverseFind_PathSepar();
+		if (s >= 0) _filePath = _filePath.Ptr((unsigned)(s + 1));
+		if (_filePath.IsEmpty()) return S_OK;
 	}
 	const int slash = _filePath.ReverseFind_PathSepar();
 	if (slash >= 0)
@@ -253,7 +260,7 @@ Z7_COM7F_IMF(CExtractCB::CryptoGetTextPassword(BSTR* password)) {
 } // namespace
 
 bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::string& destDir,
-                            const std::string& password) {
+                            const std::string& password, bool flatten) {
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 
 	const FString fdest = us2fs(GetUnicodeString(destDir.c_str()));
@@ -266,6 +273,7 @@ bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::str
 	CExtractCB* cb = new CExtractCB;
 	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
 	cb->Init(m_impl->arc, fdest, GetUnicodeString(baseName.c_str()));
+	cb->Flatten = flatten;
 	if (!password.empty()) { cb->Password = GetUnicodeString(password.c_str()); cb->PasswordIsDefined = true; }
 
 	std::vector<uint32_t> sorted(indices);

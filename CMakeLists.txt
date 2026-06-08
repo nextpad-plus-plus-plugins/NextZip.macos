@@ -29,6 +29,7 @@ set(PLUGIN_SOURCES
   src/SevenZipEngine.cpp
   src/NineZipPlugin.mm
   src/NineZipController.mm
+  src/NineZipDialogs.mm
 )
 
 add_library(NineZip MODULE ${SDK_SOURCES} ${PLUGIN_SOURCES})
@@ -39,7 +40,7 @@ target_include_directories(NineZip PRIVATE
 target_compile_definitions(NineZip PRIVATE NDEBUG _REENTRANT _FILE_OFFSET_BITS=64 _LARGEFILE_SOURCE)
 target_compile_options(NineZip PRIVATE -Wno-deprecated-declarations -fPIC)
 # ARC only for the ObjC++ UI files; the SDK/engine are plain C/C++.
-set_source_files_properties(src/NineZipPlugin.mm src/NineZipController.mm
+set_source_files_properties(src/NineZipPlugin.mm src/NineZipController.mm src/NineZipDialogs.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 set_target_properties(NineZip PROPERTIES PREFIX "" SUFFIX ".dylib" OUTPUT_NAME "NineZip")

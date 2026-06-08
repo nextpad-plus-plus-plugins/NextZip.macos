@@ -10,6 +10,7 @@
  */
 #import <Cocoa/Cocoa.h>
 #include "NineZipController.h"
+#include "NineZipDialogs.h"
 #include "NppPluginInterfaceMac.h"
 #include "SevenZipEngine.h"
 #include <memory>
@@ -108,11 +109,27 @@ NSString* humanSize(uint64_t n) {
 	return i == 0 ? [NSString stringWithFormat:@"%llu B", (unsigned long long)n]
 	              : [NSString stringWithFormat:@"%.1f %s", v, u[i]];
 }
+
+BOOL pathIsDir(NSString* p) {
+	BOOL d = NO; return [[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&d] && d;
+}
+// Quick extension heuristic for building the right-click menu (the actual open is
+// always content-detected). Folders are never archives.
+BOOL looksLikeArchive(NSString* path) {
+	if (pathIsDir(path)) return NO;
+	static NSSet* exts;
+	if (!exts) exts = [NSSet setWithArray:@[@"7z",@"zip",@"rar",@"tar",@"gz",@"tgz",@"bz2",@"tbz",
+		@"tbz2",@"xz",@"txz",@"z",@"taz",@"cab",@"iso",@"dmg",@"wim",@"swm",@"arj",@"lzh",@"lha",
+		@"rpm",@"deb",@"xar",@"pkg",@"xip",@"cpio",@"jar",@"war",@"apk",@"chm",@"udf",@"vhd",
+		@"vhdx",@"vdi",@"vmdk",@"qcow",@"qcow2",@"cramfs",@"squashfs"]];
+	return [exts containsObject:path.pathExtension.lowercaseString];
+}
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 @interface NineZipController () <NSTableViewDataSource, NSTableViewDelegate,
-                                NSOutlineViewDataSource, NSOutlineViewDelegate, NSWindowDelegate>
+                                NSOutlineViewDataSource, NSOutlineViewDelegate,
+                                NSMenuDelegate, NSWindowDelegate>
 @end
 
 @implementation NineZipController {
@@ -132,6 +149,8 @@ NSString* humanSize(uint64_t n) {
 	NSOutlineView*                 _fsOutline;       // top pane: filesystem browser
 	NSArray<NSURL*>*               _fsRoots;
 	NSMutableDictionary*           _fsChildrenCache; // NSURL → NSArray<NSURL*>
+	NSMenu*                        _fsMenu;          // top-pane right-click menu
+	NSMenu*                        _arcMenu;         // bottom-pane right-click menu
 	// temp files opened in the editor → how to write them back (incl. nested chain)
 	std::map<std::string, OpenedTemp> _openedTemps;
 }
@@ -165,7 +184,20 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	v.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;   // host stretches us
 	_panelView = v;
 
-	// ── TOP pane: filesystem browser (click an archive → loads it below) ──
+	// ── TOP pane: toolbar (Add/Extract/Test/Delete/Info) + filesystem browser ──
+	NSView* top = [[NSView alloc] initWithFrame:NSZeroRect];
+	top.translatesAutoresizingMaskIntoConstraints = NO;
+	NSStackView* fstb = [NSStackView stackViewWithViews:@[
+		[self toolButton:@"Add to archive…" symbol:@"plus" action:@selector(fsAdd:)],
+		[self toolButton:@"Extract…" symbol:@"arrow.down.doc" action:@selector(fsExtract:)],
+		[self toolButton:@"Test archive" symbol:@"checkmark.shield" action:@selector(fsTest:)],
+		[self toolButton:@"Delete (to Trash)" symbol:@"trash" action:@selector(fsDelete:)],
+		[self toolButton:@"Info / Checksum" symbol:@"info.circle" action:@selector(fsInfo:)],
+	]];
+	fstb.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+	fstb.spacing = 6; fstb.translatesAutoresizingMaskIntoConstraints = NO;
+	[top addSubview:fstb];
+
 	NSScrollView* fsScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
 	fsScroll.translatesAutoresizingMaskIntoConstraints = NO;
 	fsScroll.hasVerticalScroller = YES; fsScroll.autohidesScrollers = YES;
@@ -175,14 +207,34 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	fc.title = @"Disk"; [_fsOutline addTableColumn:fc]; _fsOutline.outlineTableColumn = fc;
 	_fsOutline.headerView = nil; _fsOutline.dataSource = self; _fsOutline.delegate = self;
 	_fsOutline.target = self; _fsOutline.doubleAction = @selector(onFsDoubleClick:);
+	_fsOutline.allowsMultipleSelection = YES;
+	_fsMenu = [[NSMenu alloc] initWithTitle:@"fs"]; _fsMenu.delegate = self; _fsOutline.menu = _fsMenu;
 	fsScroll.documentView = _fsOutline;
+	[top addSubview:fsScroll];
 	_fsChildrenCache = [NSMutableDictionary dictionary];
 	_fsRoots = @[ [NSURL fileURLWithPath:NSHomeDirectory() isDirectory:YES],
 	              [NSURL fileURLWithPath:@"/" isDirectory:YES] ];
+	[NSLayoutConstraint activateConstraints:@[
+		[fstb.topAnchor constraintEqualToAnchor:top.topAnchor constant:6],
+		[fstb.leadingAnchor constraintEqualToAnchor:top.leadingAnchor constant:8],
+		[fsScroll.topAnchor constraintEqualToAnchor:fstb.bottomAnchor constant:4],
+		[fsScroll.leadingAnchor constraintEqualToAnchor:top.leadingAnchor],
+		[fsScroll.trailingAnchor constraintEqualToAnchor:top.trailingAnchor],
+		[fsScroll.bottomAnchor constraintEqualToAnchor:top.bottomAnchor],
+	]];
 
-	// ── BOTTOM pane: archive contents (toolbar + breadcrumb + table) ──
+	// ── BOTTOM pane: archive contents (breadcrumb ABOVE the toolbar, then table) ──
 	NSView* arc = [[NSView alloc] initWithFrame:NSZeroRect];
 	arc.translatesAutoresizingMaskIntoConstraints = NO;
+
+	_breadcrumb = [[NSPathControl alloc] initWithFrame:NSZeroRect];
+	_breadcrumb.translatesAutoresizingMaskIntoConstraints = NO;
+	_breadcrumb.pathStyle = NSPathStyleStandard; _breadcrumb.editable = NO;
+	_breadcrumb.controlSize = NSControlSizeSmall;                 // compact breadcrumb
+	_breadcrumb.font = [NSFont systemFontOfSize:11];
+	_breadcrumb.target = self; _breadcrumb.action = @selector(actBreadcrumb:);
+	[arc addSubview:_breadcrumb];
+
 	NSStackView* tb = [NSStackView stackViewWithViews:@[
 		[self toolButton:@"Open archive…" symbol:@"folder" action:@selector(actOpen:)],
 		[self toolButton:@"Up" symbol:@"arrow.up" action:@selector(actUp:)],
@@ -193,14 +245,6 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	tb.orientation = NSUserInterfaceLayoutOrientationHorizontal;
 	tb.spacing = 6; tb.translatesAutoresizingMaskIntoConstraints = NO;
 	[arc addSubview:tb];
-
-	_breadcrumb = [[NSPathControl alloc] initWithFrame:NSZeroRect];
-	_breadcrumb.translatesAutoresizingMaskIntoConstraints = NO;
-	_breadcrumb.pathStyle = NSPathStyleStandard; _breadcrumb.editable = NO;
-	_breadcrumb.controlSize = NSControlSizeSmall;                 // compact breadcrumb
-	_breadcrumb.font = [NSFont systemFontOfSize:11];
-	_breadcrumb.target = self; _breadcrumb.action = @selector(actBreadcrumb:);
-	[arc addSubview:_breadcrumb];
 
 	NSScrollView* sc = [[NSScrollView alloc] initWithFrame:NSZeroRect];
 	sc.translatesAutoresizingMaskIntoConstraints = NO;
@@ -218,16 +262,17 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	}
 	_table.dataSource = self; _table.delegate = self;
 	_table.doubleAction = @selector(onDoubleClick:); _table.target = self;
+	_arcMenu = [[NSMenu alloc] initWithTitle:@"arc"]; _arcMenu.delegate = self; _table.menu = _arcMenu;
 	sc.documentView = _table;
 	[arc addSubview:sc];
 	[NSLayoutConstraint activateConstraints:@[
-		[tb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:6],
-		[tb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
-		[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:5],
+		[_breadcrumb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:5],
 		[_breadcrumb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
 		[_breadcrumb.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor constant:-8],
 		[_breadcrumb.heightAnchor constraintEqualToConstant:16],
-		[sc.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
+		[tb.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
+		[tb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
+		[sc.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:4],
 		[sc.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor],
 		[sc.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor],
 		[sc.bottomAnchor constraintEqualToAnchor:arc.bottomAnchor],
@@ -238,7 +283,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	split.translatesAutoresizingMaskIntoConstraints = NO;
 	split.vertical = NO;                 // horizontal divider → stacked vertically
 	split.dividerStyle = NSSplitViewDividerStyleThin;
-	[split addArrangedSubview:fsScroll];
+	[split addArrangedSubview:top];
 	[split addArrangedSubview:arc];
 	[v addSubview:split];
 	[NSLayoutConstraint activateConstraints:@[
@@ -573,6 +618,289 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		}
 	}
 	return YES;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TOP-PANE actions (filesystem selection): Add / Extract / Test / Delete / Info
+// ═══════════════════════════════════════════════════════════════════════════
+- (NSArray<NSString*>*)selectedFsPaths {
+	NSMutableArray<NSString*>* out = [NSMutableArray array];
+	NSIndexSet* rows = _fsOutline.selectedRowIndexes;
+	[rows enumerateIndexesUsingBlock:^(NSUInteger r, BOOL* stop) {
+		id item = [_fsOutline itemAtRow:(NSInteger)r];
+		if ([item isKindOfClass:[NSURL class]]) {
+			NSString* p = [(NSURL*)item path];
+			if (p.length) [out addObject:p];
+		}
+	}];
+	return out;
+}
+- (NSString*)singleFsSelection {
+	NSArray<NSString*>* p = [self selectedFsPaths];
+	return p.count == 1 ? p.firstObject : nil;
+}
+- (NSString*)singleArchiveSelection {
+	NSString* p = [self singleFsSelection];
+	return (p && !pathIsDir(p)) ? p : nil;     // a single regular file
+}
+// Clear the FS cache and reload, preserving the expanded rows where possible.
+- (void)refreshFs {
+	NSMutableArray<id>* expanded = [NSMutableArray array];
+	for (NSInteger i = 0; i < _fsOutline.numberOfRows; i++) {
+		id it = [_fsOutline itemAtRow:i];
+		if ([_fsOutline isItemExpanded:it]) [expanded addObject:it];
+	}
+	[_fsChildrenCache removeAllObjects];
+	[_fsOutline reloadData];
+	for (id it in expanded) [_fsOutline expandItem:it];
+}
+
+- (void)fsAdd:(id)s {
+	NSArray<NSString*>* inputs = [self selectedFsPaths];
+	if (inputs.count == 0) { [self alert:@"Add to Archive" info:@"Select one or more files or folders first."]; return; }
+	NZAddOptions* o = [NineZipDialogs runAddForInputs:inputs];
+	if (!o) return;
+	[self performAdd:o inputs:inputs];
+}
+- (void)fsAddQuick:(NSMenuItem*)item {
+	NSString* fmt = [item.representedObject isKindOfClass:[NSString class]] ? item.representedObject : @"7z";
+	NSArray<NSString*>* inputs = [self selectedFsPaths];
+	if (inputs.count == 0) return;
+	NSString* first = inputs.firstObject;
+	NSString* dir = [first stringByDeletingLastPathComponent];
+	NSString* base = inputs.count == 1 ? [[first lastPathComponent] stringByDeletingPathExtension]
+	                                   : [dir lastPathComponent];
+	if (base.length == 0) base = @"Archive";
+	NSString* dest = [dir stringByAppendingPathComponent:[base stringByAppendingPathExtension:fmt]];
+	NZAddOptions* o = [NZAddOptions new];
+	o.archivePath = dest; o.format = fmt; o.level = 5; o.password = @""; o.encryptNames = NO; o.deleteAfter = NO;
+	[self performAdd:o inputs:inputs];
+}
+- (void)performAdd:(NZAddOptions*)o inputs:(NSArray<NSString*>*)inputs {
+	if (!o.archivePath.length || inputs.count == 0) return;
+	if ([[NSFileManager defaultManager] fileExistsAtPath:o.archivePath]) {
+		NSAlert* a = [[NSAlert alloc] init];
+		a.messageText = @"Overwrite existing archive?";
+		a.informativeText = o.archivePath;
+		[a addButtonWithTitle:@"Overwrite"]; [a addButtonWithTitle:@"Cancel"];
+		if ([a runModal] != NSAlertFirstButtonReturn) return;
+	}
+	std::vector<std::string> ins;
+	for (NSString* p in inputs) if (p.length) ins.push_back(p.UTF8String);
+	bool ok = _engine->compress(o.archivePath.UTF8String, o.format.UTF8String, o.level,
+	                            o.password.UTF8String, o.encryptNames, ins, o.deleteAfter);
+	if (ok) { [self refreshFs];
+		[self alert:@"Add to Archive" info:[NSString stringWithFormat:@"Created:\n%@", o.archivePath]]; }
+	else    [self alert:@"Add to Archive failed" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
+}
+
+- (void)fsExtract:(id)s {
+	NSString* a = [self singleArchiveSelection];
+	if (!a) { [self alert:@"Extract" info:@"Select a single archive file first."]; return; }
+	NZExtractOptions* o = [NineZipDialogs runExtractForArchive:a];
+	if (!o) return;
+	NSString* dest = o.destDir;
+	if (o.intoSubfolder) dest = [dest stringByAppendingPathComponent:[[a lastPathComponent] stringByDeletingPathExtension]];
+	[self extractArchive:a to:dest password:o.password flatten:(o.pathMode == 1)];
+}
+- (void)fsExtractHere:(id)s {
+	NSString* a = [self singleArchiveSelection]; if (!a) return;
+	[self extractArchive:a to:[a stringByDeletingLastPathComponent] password:@"" flatten:NO];
+}
+- (void)fsExtractToSub:(id)s {
+	NSString* a = [self singleArchiveSelection]; if (!a) return;
+	NSString* sub = [[a stringByDeletingLastPathComponent]
+	                  stringByAppendingPathComponent:[[a lastPathComponent] stringByDeletingPathExtension]];
+	[self extractArchive:a to:sub password:@"" flatten:NO];
+}
+- (void)extractArchive:(NSString*)archivePath to:(NSString*)dest password:(NSString*)pw flatten:(BOOL)flatten {
+	if (!archivePath.length || !dest.length) return;
+	NineZipEngine eng;                                  // fresh engine — don't disturb the open view
+	if (!eng.open(archivePath.UTF8String)) {
+		[self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return;
+	}
+	std::vector<uint32_t> all;                          // empty = everything
+	bool ok = eng.extract(all, dest.UTF8String, pw ? pw.UTF8String : "", flatten ? true : false);
+	[self refreshFs];
+	if (ok) [self alert:@"Extract" info:[NSString stringWithFormat:@"Extracted to:\n%@", dest]];
+	else    [self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]];
+}
+
+- (void)fsTest:(id)s {
+	NSString* a = [self singleArchiveSelection];
+	if (!a) { [self alert:@"Test archive" info:@"Select a single archive file first."]; return; }
+	NineZipEngine eng;
+	if (!eng.open(a.UTF8String)) { [self alert:@"Test failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return; }
+	bool ok = eng.test({});
+	unsigned long long files = 0, folders = 0, size = 0, packed = 0;
+	for (const NZEntry& e : eng.entries()) { if (e.isDir) folders++; else { files++; size += e.size; packed += e.packSize; } }
+	NSString* msg = [NSString stringWithFormat:
+		@"Archive: %@\n\nArchives: 1\nPacked Size: %llu bytes\nFolders: %llu\nFiles: %llu\nSize: %llu bytes\n\n%@",
+		a.lastPathComponent, packed, folders, files, size,
+		ok ? @"There are no errors" : [NSString stringWithUTF8String:eng.error().c_str()]];
+	[NineZipDialogs showInfoTitle:@"Testing" text:msg];
+}
+
+- (void)fsDelete:(id)s {
+	NSArray<NSString*>* paths = [self selectedFsPaths];
+	if (paths.count == 0) { [self alert:@"Delete" info:@"Select files or folders first."]; return; }
+	NSAlert* a = [[NSAlert alloc] init];
+	a.messageText = [NSString stringWithFormat:@"Move %lu item%@ to the Trash?",
+	                 (unsigned long)paths.count, paths.count == 1 ? @"" : @"s"];
+	a.informativeText = paths.count == 1 ? paths.firstObject : @"The selected items will be moved to the Trash.";
+	[a addButtonWithTitle:@"Move to Trash"]; [a addButtonWithTitle:@"Cancel"];
+	if ([a runModal] != NSAlertFirstButtonReturn) return;
+	NSFileManager* fm = [NSFileManager defaultManager];
+	for (NSString* p in paths) {
+		NSError* err = nil;
+		[fm trashItemAtURL:[NSURL fileURLWithPath:p] resultingItemURL:nil error:&err];
+	}
+	[self refreshFs];
+}
+
+- (void)fsInfo:(id)s          { [self computeChecksumForSelection:@"SHA256"]; }
+- (void)fsChecksum:(NSMenuItem*)item {
+	NSString* algo = [item.representedObject isKindOfClass:[NSString class]] ? item.representedObject : @"SHA256";
+	[self computeChecksumForSelection:algo];
+}
+- (void)computeChecksumForSelection:(NSString*)algo {
+	NSArray<NSString*>* paths = [self selectedFsPaths];
+	if (paths.count == 0) { [self alert:@"Checksum" info:@"Select a file or folder first."]; return; }
+	NSFileManager* fm = [NSFileManager defaultManager];
+	unsigned long long folders = 0, files = 0, size = 0;
+	NSString* singleFile = (paths.count == 1 && !pathIsDir(paths.firstObject)) ? paths.firstObject : nil;
+	for (NSString* p in paths) {
+		BOOL dir = NO; if (![fm fileExistsAtPath:p isDirectory:&dir]) continue;
+		if (!dir) { files++; size += [[fm attributesOfItemAtPath:p error:nil][NSFileSize] unsignedLongLongValue]; continue; }
+		folders++;
+		NSDirectoryEnumerator* en = [fm enumeratorAtPath:p];
+		for (NSString* sub in en) {
+			NSString* full = [p stringByAppendingPathComponent:sub];
+			BOOL d2 = NO; [fm fileExistsAtPath:full isDirectory:&d2];
+			if (d2) folders++; else { files++; size += [[fm attributesOfItemAtPath:full error:nil][NSFileSize] unsignedLongLongValue]; }
+		}
+	}
+	NSMutableString* msg = [NSMutableString string];
+	[msg appendFormat:@"Folders: %llu\nFiles:   %llu\nSize:    %llu bytes\n", folders, files, size];
+	if (singleFile) {
+		[msg appendFormat:@"\nFile: %@\n", singleFile.lastPathComponent];
+		NSMutableArray<NSString*>* algos = [NSMutableArray arrayWithObject:@"CRC32"];
+		if (![algo isEqualToString:@"CRC32"]) [algos addObject:algo];
+		for (NSString* a in algos) {
+			std::string hex, err;
+			if (NineZipEngine::checksumFile(singleFile.UTF8String, a.UTF8String, hex, err))
+				[msg appendFormat:@"%-7@ %s\n", a, hex.c_str()];
+			else
+				[msg appendFormat:@"%-7@ (%s)\n", a, err.c_str()];
+		}
+	} else {
+		[msg appendString:@"\n(Select a single file to compute its checksum.)"];
+	}
+	[NineZipDialogs showInfoTitle:@"Checksum information" text:msg];
+}
+- (void)fsOpenArchiveMenu:(id)s {
+	NSString* a = [self singleFsSelection];
+	if (a) [self openArchiveAtPath:a quiet:NO];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BOTTOM-PANE extras: open-in-editor / delete-from-archive (menu)
+// ═══════════════════════════════════════════════════════════════════════════
+- (void)arcOpenInEditorMenu:(id)s {
+	NSInteger row = _table.clickedRow >= 0 ? _table.clickedRow : _table.selectedRow;
+	FMNode* n = [self nodeAtRow:row];
+	if (n && !n->isDir && n->entryIndex >= 0) [self openEntryInEditor:n];
+}
+- (void)arcDelete:(id)s {
+	if (!_root) return;
+	std::vector<uint32_t> idx = [self selectedIndices];
+	if (idx.empty()) { [self alert:@"Delete" info:@"Select entries to delete."]; return; }
+	NSAlert* a = [[NSAlert alloc] init];
+	a.messageText = [NSString stringWithFormat:@"Delete %lu item%@ from the archive?",
+	                 (unsigned long)idx.size(), idx.size() == 1 ? @"" : @"s"];
+	a.informativeText = @"This rewrites the archive without the selected entries.";
+	[a addButtonWithTitle:@"Delete"]; [a addButtonWithTitle:@"Cancel"];
+	if ([a runModal] != NSAlertFirstButtonReturn) return;
+	if (!_engine->deleteEntries(idx)) {
+		[self alert:@"Delete failed" info:[NSString stringWithUTF8String:_engine->error().c_str()]]; return;
+	}
+	// nested (.tar.gz): the inner temp changed → re-wrap outward to the real file.
+	if (_layers.size() > 1) {
+		std::string err;
+		if (![self rewrapOutwardFromInner:err])
+			[self alert:@"Saved inside, but couldn't update the outer archive" info:[NSString stringWithUTF8String:err.c_str()]];
+	}
+	freeTree(_root); _root = buildTree(_engine->entries());
+	[self navigateTo:_root];
+}
+- (BOOL)rewrapOutwardFromInner:(std::string&)err {
+	for (long i = (long)_layers.size() - 2; i >= 0; i--) {
+		NineZipEngine e;
+		if (!e.open(_layers[(size_t)i].first) || !e.updateFile(_layers[(size_t)i].second, _layers[(size_t)i + 1].first)) {
+			err = e.error().empty() ? "re-wrap failed" : e.error(); return NO;
+		}
+	}
+	return YES;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Right-click context menus (NSMenuDelegate)
+// ═══════════════════════════════════════════════════════════════════════════
+- (NSMenuItem*)addItem:(NSMenu*)menu title:(NSString*)title action:(SEL)sel {
+	NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:title action:sel keyEquivalent:@""];
+	it.target = self; [menu addItem:it]; return it;
+}
+- (void)menuNeedsUpdate:(NSMenu*)menu {
+	[menu removeAllItems];
+	if (menu == _fsMenu)       [self buildFsMenu:menu];
+	else if (menu == _arcMenu) [self buildArcMenu:menu];
+}
+- (void)buildFsMenu:(NSMenu*)menu {
+	NSInteger cr = _fsOutline.clickedRow;
+	if (cr >= 0 && ![_fsOutline.selectedRowIndexes containsIndex:cr])
+		[_fsOutline selectRowIndexes:[NSIndexSet indexSetWithIndex:cr] byExtendingSelection:NO];
+	NSArray<NSString*>* sel = [self selectedFsPaths];
+	if (sel.count == 0) return;
+	BOOL single = (sel.count == 1);
+	NSString* first = sel.firstObject;
+	BOOL singleArchive = single && looksLikeArchive(first);
+	NSString* nameNoExt = [[first lastPathComponent] stringByDeletingPathExtension];
+
+	if (singleArchive) {
+		[self addItem:menu title:@"Open archive" action:@selector(fsOpenArchiveMenu:)];
+		[self addItem:menu title:@"Extract files…" action:@selector(fsExtract:)];
+		[self addItem:menu title:@"Extract Here" action:@selector(fsExtractHere:)];
+		[self addItem:menu title:[NSString stringWithFormat:@"Extract to \"%@/\"", nameNoExt] action:@selector(fsExtractToSub:)];
+		[self addItem:menu title:@"Test archive" action:@selector(fsTest:)];
+		[menu addItem:[NSMenuItem separatorItem]];
+	}
+	[self addItem:menu title:@"Add to archive…" action:@selector(fsAdd:)];
+	NSString* qbase = single ? nameNoExt : [[first stringByDeletingLastPathComponent] lastPathComponent];
+	if (qbase.length == 0) qbase = @"Archive";
+	[self addItem:menu title:[NSString stringWithFormat:@"Add to \"%@.7z\"", qbase] action:@selector(fsAddQuick:)].representedObject = @"7z";
+	[self addItem:menu title:[NSString stringWithFormat:@"Add to \"%@.zip\"", qbase] action:@selector(fsAddQuick:)].representedObject = @"zip";
+	[menu addItem:[NSMenuItem separatorItem]];
+	NSMenu* crc = [[NSMenu alloc] initWithTitle:@"CRC SHA"];
+	for (NSString* alg in @[@"CRC32",@"MD5",@"SHA1",@"SHA256",@"SHA384",@"SHA512"]) {
+		NSMenuItem* it = [[NSMenuItem alloc] initWithTitle:alg action:@selector(fsChecksum:) keyEquivalent:@""];
+		it.target = self; it.representedObject = alg; [crc addItem:it];
+	}
+	NSMenuItem* crcItem = [[NSMenuItem alloc] initWithTitle:@"CRC SHA" action:nil keyEquivalent:@""];
+	crcItem.submenu = crc; [menu addItem:crcItem];
+}
+- (void)buildArcMenu:(NSMenu*)menu {
+	if (!_root) return;
+	NSInteger cr = _table.clickedRow;
+	if (cr >= 0 && ![_table.selectedRowIndexes containsIndex:cr])
+		[_table selectRowIndexes:[NSIndexSet indexSetWithIndex:cr] byExtendingSelection:NO];
+	FMNode* n = cr >= 0 ? [self nodeAtRow:cr] : nil;
+	if (n && !n->isDir && n->entryIndex >= 0)
+		[self addItem:menu title:@"Open in Editor" action:@selector(arcOpenInEditorMenu:)];
+	[self addItem:menu title:@"Extract…" action:@selector(actExtract:)];
+	[self addItem:menu title:@"Test" action:@selector(actTest:)];
+	[self addItem:menu title:@"Info" action:@selector(actInfo:)];
+	[menu addItem:[NSMenuItem separatorItem]];
+	[self addItem:menu title:@"Delete from archive" action:@selector(arcDelete:)];
 }
 
 // ── toolbar: extract / test / info ──────────────────────────────────────────────
