@@ -35,6 +35,24 @@ struct FMNode {
 
 void freeTree(FMNode* n) { if (!n) return; for (auto c : n->children) freeTree(c); delete n; }
 
+// A chain of nested-archive layers, outer → inner. .first = the archive file on
+// disk (real for [0], a temp for unwrapped inner layers); .second = the single
+// entry name inside that layer which yielded the next one (used to re-wrap on
+// save). Length 1 for an ordinary archive; longer for .tar.gz etc.
+using ArcChain = std::vector<std::pair<std::string,std::string>>;
+
+// Which formats are single-stream compressors that wrap exactly one payload —
+// the ones we transparently unwrap (e.g. site.tar.gz → show the inner tar).
+bool isSingleStream(const std::string& fmt) {
+	return fmt == "gzip" || fmt == "bzip2" || fmt == "xz" || fmt == "z";
+}
+
+// A file extracted to temp and opened in the editor → how to write it back.
+struct OpenedTemp {
+	std::string entryPath;   // path inside the innermost archive
+	ArcChain    chain;       // layer chain captured at open time (for re-wrap)
+};
+
 std::vector<std::string> splitPath(const std::string& p) {
 	std::vector<std::string> out; std::string cur;
 	for (char c : p) {
@@ -103,7 +121,9 @@ NSString* humanSize(uint64_t n) {
 	FMNode*                        _root;
 	FMNode*                        _cwd;
 	std::vector<FMNode*>           _ancestors;   // root..cwd, parallel to breadcrumb items
-	NSString*                      _archivePath;
+	NSString*                      _archivePath;   // innermost archive the engine is open on (may be a temp)
+	NSString*                      _displayPath;   // outermost real file the user clicked (for the breadcrumb)
+	ArcChain                       _layers;        // outer→inner nested-archive chain for the current view
 	NSView*                        _panelView;     // dock-panel content (registered with the host)
 	void*                          _panelHandle;   // NPPM_DMM_REGISTERPANEL handle
 	BOOL                           _panelVisible;
@@ -112,8 +132,8 @@ NSString* humanSize(uint64_t n) {
 	NSOutlineView*                 _fsOutline;       // top pane: filesystem browser
 	NSArray<NSURL*>*               _fsRoots;
 	NSMutableDictionary*           _fsChildrenCache; // NSURL → NSArray<NSURL*>
-	// temp files opened in the editor → {archivePath, entryPath} for save-back
-	std::map<std::string, std::pair<std::string,std::string>> _openedTemps;
+	// temp files opened in the editor → how to write them back (incl. nested chain)
+	std::map<std::string, OpenedTemp> _openedTemps;
 }
 
 static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
@@ -267,11 +287,46 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		if (!quiet) [self alert:@"Could not open archive" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
 		return;
 	}
-	_archivePath = path;
+	_displayPath = path;
+	_layers.clear();
+	_layers.push_back({ std::string(path.UTF8String), std::string() });
+
+	// Transparently descend single-stream compressors whose lone payload is itself
+	// an archive: site.tar.gz → gzip{site.tar} → show the inner tar's files. We only
+	// unwrap .gz/.bz2/.xz/.z (which always wrap exactly one file); a 1-entry .zip is
+	// left as-is. Stop when the payload isn't itself an archive (e.g. data.json.gz).
+	for (int guard = 0; guard < 6; guard++) {
+		if (!isSingleStream(_engine->format())) break;
+		if (_engine->entries().size() != 1 || _engine->entries()[0].isDir) break;
+		const std::string childName = _engine->entries()[0].path;   // entry name in this layer
+		NSString* tmpDir = [self newLayerTempDir];
+		if (!_engine->extract({0}, tmpDir.UTF8String)) break;
+		// The compressor wrote exactly one file into tmpDir; take it regardless of name.
+		NSArray<NSString*>* kids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:tmpDir error:nil];
+		if (kids.count != 1) break;
+		NSString* innerPath = [tmpDir stringByAppendingPathComponent:kids[0]];
+		std::unique_ptr<NineZipEngine> probe(new NineZipEngine());
+		if (!probe->open(innerPath.UTF8String)) break;              // plain file → keep the single entry
+		_layers.back().second = childName;                          // remember for re-wrap on save
+		_layers.push_back({ std::string(innerPath.UTF8String), std::string() });
+		_engine = std::move(probe);
+	}
+
+	_archivePath = [NSString stringWithUTF8String:_layers.back().first.c_str()];
 	freeTree(_root);
 	_root = buildTree(_engine->entries());
 	[self navigateTo:_root];
 	[self show];
+}
+
+// A fresh unique temp dir for one unwrapped layer (kept for the session so
+// save-back can re-wrap even after navigating away).
+- (NSString*)newLayerTempDir {
+	NSString* base = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"NineZip"]
+	                   stringByAppendingPathComponent:@"layers"];
+	NSString* dir = [base stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]];
+	[[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+	return dir;
 }
 
 // ── navigation ─────────────────────────────────────────────────────────────────
@@ -287,7 +342,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	NSMutableArray* items = [NSMutableArray array];
 	for (size_t i = 0; i < _ancestors.size(); i++) {
 		NSPathControlItem* it = [[NSPathControlItem alloc] init];
-		it.title = (i == 0) ? _archivePath.lastPathComponent
+		it.title = (i == 0) ? (_displayPath.lastPathComponent ?: _archivePath.lastPathComponent)
 		                    : [NSString stringWithUTF8String:_ancestors[i]->name.c_str()];
 		it.image = folder;
 		[items addObject:it];
@@ -456,39 +511,68 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	}
 	NSString* rel  = [NSString stringWithUTF8String:_engine->entries()[n->entryIndex].path.c_str()];
 	NSString* full = [base stringByAppendingPathComponent:rel];
-	// Record this temp ↔ archive entry FIRST, then hand the host a pointer into the
-	// map node. NPPM_DOOPEN captures the raw const char* and dereferences it on the
-	// NEXT run-loop turn (dispatch_async), so an autoreleased -UTF8String buffer would
-	// already be freed → "The file name is invalid." std::map node strings are stable
-	// (never relocated; outlive this call), which is exactly what the host needs.
-	auto res = _openedTemps.insert_or_assign(std::string(full.UTF8String),
-	               std::make_pair(std::string(_archivePath.UTF8String),
-	                              _engine->entries()[n->entryIndex].path));
+	// Record this temp ↔ archive entry (incl. the nested-archive chain) FIRST, then
+	// hand the host a pointer into the map node. NPPM_DOOPEN captures the raw const
+	// char* and dereferences it on the NEXT run-loop turn (dispatch_async), so an
+	// autoreleased -UTF8String buffer would already be freed → "The file name is
+	// invalid." std::map node strings are stable (never relocated; outlive this call).
+	OpenedTemp ot{ _engine->entries()[n->entryIndex].path, _layers };
+	auto res = _openedTemps.insert_or_assign(std::string(full.UTF8String), std::move(ot));
 	const char* stablePath = res.first->first.c_str();
 	NppData* d = NineZip_HostData();
 	if (d) d->_sendMessage(d->_nppHandle, NPPM_DOOPEN, 0, (intptr_t)stablePath);
 }
 
 // ── save-back: editor saved a file we extracted → write it into the archive ──
+// For a plain archive the chain is length 1 (update in place). For a nested one
+// (e.g. .tar.gz) we update the innermost layer, then re-wrap outward: each parent
+// compressor has its single payload replaced by the just-updated child file, so
+// the change propagates all the way back to the real file on disk.
 - (void)handleFileSaved:(NSString*)savedPath {
 	if (!savedPath) return;
 	auto it = _openedTemps.find(savedPath.UTF8String);
 	if (it == _openedTemps.end()) return;                 // not one of ours
-	const std::string arc = it->second.first, entry = it->second.second;
-	bool isCurrent = (_archivePath && arc == std::string(_archivePath.UTF8String) && _root);
-	bool ok = false;
-	if (isCurrent) {
-		ok = _engine->updateFile(entry, savedPath.UTF8String);   // re-opens internally
-		if (ok) { freeTree(_root); _root = buildTree(_engine->entries()); [self navigateTo:_root]; }
-		else    [self alert:@"Could not save back to archive"
-		               info:[NSString stringWithUTF8String:_engine->error().c_str()]];
-	} else {
-		NineZipEngine tmp;                                       // auto-resolves the engine dylib
-		ok = tmp.open(arc) && tmp.updateFile(entry, savedPath.UTF8String);
-		if (!ok) [self alert:@"Could not save back to archive"
-		              info:[NSString stringWithUTF8String:tmp.error().c_str()]];
+	const std::string entry = it->second.entryPath;
+	const ArcChain& chain   = it->second.chain;
+	if (chain.empty()) return;
+
+	std::string err;
+	bool ok = [self rewriteChain:chain entry:entry from:std::string(savedPath.UTF8String) error:err];
+	if (!ok) { [self alert:@"Could not save back to archive" info:[NSString stringWithUTF8String:err.c_str()]]; return; }
+
+	NSLog(@"[NineZip] saved '%s' back into %s", entry.c_str(), chain.front().first.c_str());
+	// If what we just rewrote is the archive currently on screen, refresh the view.
+	if (_archivePath && chain.back().first == std::string(_archivePath.UTF8String) && _root) {
+		_engine->open(_archivePath.UTF8String);
+		freeTree(_root); _root = buildTree(_engine->entries()); [self navigateTo:_cwd ? _cwd : _root];
 	}
-	if (ok) NSLog(@"[NineZip] saved '%s' back into %s", entry.c_str(), arc.c_str());
+}
+
+// Write `entry` (= contents of `srcFile`) into chain.back(), then re-wrap each
+// parent layer from inner to outer. Uses throwaway engines so it works regardless
+// of the current on-screen archive.
+- (BOOL)rewriteChain:(const ArcChain&)chain entry:(const std::string&)entry
+                from:(const std::string&)srcFile error:(std::string&)err {
+	// innermost: replace the edited entry
+	{
+		NineZipEngine inner;
+		if (!inner.open(chain.back().first) || !inner.updateFile(entry, srcFile)) {
+			err = inner.error().empty() ? "could not open innermost archive" : inner.error();
+			return NO;
+		}
+	}
+	// outward: each parent's lone payload becomes the just-updated child file
+	for (long i = (long)chain.size() - 2; i >= 0; i--) {
+		const std::string& parent     = chain[(size_t)i].first;
+		const std::string& childName  = chain[(size_t)i].second;   // entry in parent that is the child
+		const std::string& childFile  = chain[(size_t)i + 1].first;
+		NineZipEngine e;
+		if (!e.open(parent) || !e.updateFile(childName, childFile)) {
+			err = e.error().empty() ? "could not re-wrap nested archive" : e.error();
+			return NO;
+		}
+	}
+	return YES;
 }
 
 // ── toolbar: extract / test / info ──────────────────────────────────────────────
@@ -527,8 +611,12 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 
 - (void)actInfo:(id)s {
 	FMNode* n = [self nodeAtRow:_table.selectedRow];
-	if (!n) { [self alert:@"NineZip" info:[NSString stringWithFormat:@"Archive: %@\nFormat: %s\nItems: %zu",
-		_archivePath, _engine->format().c_str(), _engine->entries().size()]]; return; }
+	if (!n) {
+		NSString* nested = (_layers.size() > 1)
+			? [NSString stringWithFormat:@"\n(unwrapped %lu nested layers)", (unsigned long)_layers.size() - 1] : @"";
+		[self alert:@"NineZip" info:[NSString stringWithFormat:@"Archive: %@\nFormat: %s\nItems: %zu%@",
+			_displayPath ?: _archivePath, _engine->format().c_str(), _engine->entries().size(), nested]]; return;
+	}
 	if (n->entryIndex < 0) { [self alert:@"Folder" info:[NSString stringWithUTF8String:n->name.c_str()]]; return; }
 	const NZEntry& e = _engine->entries()[n->entryIndex];
 	[self alert:[NSString stringWithUTF8String:e.path.c_str()]

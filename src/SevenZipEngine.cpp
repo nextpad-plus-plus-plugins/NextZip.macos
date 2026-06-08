@@ -33,14 +33,26 @@ using namespace NWindows;
 // ── engine entry point type ─────────────────────────────────────────────────
 typedef Int32 (Z7_STDCALL *Func_CreateObject)(const GUID *clsid, const GUID *iid, void **out);
 
-// ── format ids we try, signature-bearing first, signatureless (tar/cpio) last ─
+// ── format ids we try, in detection order ────────────────────────────────────
+// open() walks this list and the first handler whose Open() accepts the file
+// wins, so strong-signature formats come first and the weak/signatureless ones
+// (tar/cpio) come last. IDs verified against the vendored 7-Zip source
+// (REGISTER_ARC). Filesystem/boot formats with loose signatures that over-match
+// on ordinary files (fat/ntfs/mbr/gpt/split/elf) are deliberately omitted.
 namespace {
 struct FmtId { Byte id; const char* name; };
 const FmtId kFormats[] = {
-	{0x07,"7z"}, {0x01,"zip"}, {0xCC,"rar5"}, {0x03,"rar"}, {0xEF,"gzip"},
-	{0x02,"bzip2"}, {0x0C,"xz"}, {0x08,"cab"}, {0xE7,"iso"}, {0xE6,"wim"},
-	{0x04,"arj"}, {0x05,"z"}, {0x06,"lzh"}, {0xEB,"rpm"}, {0xE4,"dmg"},
-	{0xCB,"xar"}, {0xED,"cpio"}, {0xEE,"tar"},
+	// general archives
+	{0x07,"7z"}, {0x01,"zip"}, {0xCC,"rar5"}, {0x03,"rar"},
+	{0xEF,"gzip"}, {0x02,"bzip2"}, {0x0C,"xz"}, {0x05,"z"},
+	{0x08,"cab"}, {0xE1,"xar"}, {0xEB,"rpm"}, {0xEC,"deb"},      // xar fixed (was 0xCB = GPT)
+	{0x04,"arj"}, {0x06,"lzh"}, {0xE9,"chm"}, {0x09,"nsis"}, {0xE5,"compound"},
+	// disk images / filesystems (specific magics → low false-positive)
+	{0xE4,"dmg"}, {0xE3,"hfs"}, {0xC3,"apfs"}, {0xD2,"squashfs"}, {0xD3,"cramfs"},
+	{0xC7,"ext"}, {0xE7,"iso"}, {0xE0,"udf"}, {0xE6,"wim"},
+	{0xC4,"vhdx"}, {0xDC,"vhd"}, {0xC9,"vdi"}, {0xC8,"vmdk"}, {0xCA,"qcow"},
+	// weak / no signature — keep LAST so they don't shadow the above
+	{0xED,"cpio"}, {0xEE,"tar"},
 };
 
 GUID FormatGUID(Byte id) {
@@ -178,14 +190,15 @@ class CExtractCB Z7_final :
 	CMyComPtr<IInArchive> _arc;
 	FString               _dir;        // normalized output dir prefix
 	UString               _filePath;   // current item's path inside the archive
+	UString               _fallback;   // name to use when an entry has no stored path
 	bool                  _isDir = false;
 	CMyComPtr<ISequentialOutStream> _out;
 public:
 	UString Password;
 	bool    PasswordIsDefined = false;
 	UInt64  NumErrors = 0;
-	void Init(IInArchive* a, const FString& dir) {
-		_arc = a; _dir = dir; NName::NormalizeDirPathPrefix(_dir); NumErrors = 0;
+	void Init(IInArchive* a, const FString& dir, const UString& fallback = UString()) {
+		_arc = a; _dir = dir; NName::NormalizeDirPathPrefix(_dir); _fallback = fallback; NumErrors = 0;
 	}
 };
 
@@ -200,6 +213,9 @@ Z7_COM7F_IMF(CExtractCB::GetStream(UInt32 index, ISequentialOutStream** outStrea
 		RINOK(_arc->GetProperty(index, kpidPath, &prop))
 		_filePath = (prop.vt == VT_BSTR && prop.bstrVal) ? UString(prop.bstrVal) : UString();
 	}
+	// Single-stream compressors (.gz/.bz2/.xz from `tar czf`) often store no name —
+	// fall back to a derived name so we still write a real file, not the dir itself.
+	if (_filePath.IsEmpty()) _filePath = _fallback.IsEmpty() ? UString("payload") : _fallback;
 	if (askExtractMode != NArchive::NExtract::NAskMode::kExtract) return S_OK;
 	{
 		NCOM::CPropVariant prop;
@@ -238,9 +254,14 @@ bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::str
 
 	const FString fdest = us2fs(GetUnicodeString(destDir.c_str()));
 	NWindows::NFile::NDir::CreateComplexDir(fdest);   // ensure destDir exists (top-level files)
+	// Fallback name for nameless single-stream entries: archive basename minus its
+	// last extension (site.tar.gz → site.tar).
+	std::string baseName = m_archivePath;
+	if (size_t s = baseName.find_last_of("/\\"); s != std::string::npos) baseName = baseName.substr(s + 1);
+	if (size_t d = baseName.find_last_of('.'); d != std::string::npos && d > 0) baseName = baseName.substr(0, d);
 	CExtractCB* cb = new CExtractCB;
 	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
-	cb->Init(m_impl->arc, fdest);
+	cb->Init(m_impl->arc, fdest, GetUnicodeString(baseName.c_str()));
 	if (!password.empty()) { cb->Password = GetUnicodeString(password.c_str()); cb->PasswordIsDefined = true; }
 
 	std::vector<uint32_t> sorted(indices);
@@ -351,7 +372,17 @@ bool NineZipEngine::updateFile(const std::string& entryPath, const std::string& 
 		cb->Init(m_impl->arc, (UInt32)target, GetUnicodeString(entryPath.c_str()), localFile);
 		HRESULT hr = outArc->UpdateItems(outStream, (UInt32)m_entries.size(), cbPtr);
 		outStream.Release();   // flush + close temp before we move it
-		if (hr != S_OK || cb->NumErrors) { ::remove(tmp.c_str()); m_error = "archive update failed"; return false; }
+		if (hr != S_OK || cb->NumErrors) {
+			::remove(tmp.c_str());
+			if (hr == E_NOTIMPL)
+				m_error = "this archive can't be modified in place — it opened with warnings "
+				          "(e.g. a macOS-created tar containing ._ resource files)";
+			else {
+				char buf[96]; snprintf(buf, sizeof buf, "archive update failed (0x%08X)", (unsigned)hr);
+				m_error = buf;
+			}
+			return false;
+		}
 	}
 	// Replace the original with the rebuilt archive, then re-open.
 	std::string arcPath = m_archivePath;
