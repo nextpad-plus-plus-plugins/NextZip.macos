@@ -10,21 +10,21 @@ int main(int argc, char** argv) {
 
 	// 1) compress into zip and 7z
 	for (std::string fmt : {std::string("zip"), std::string("7z"), std::string("tar")}) {
-		NineZipEngine e; e.setEnginePath(engine);
+		NextZipEngine e; e.setEnginePath(engine);
 		std::string dest = out + "/out." + fmt;
 		std::vector<std::string> inputs = { in };
-		NineZipEngine::CompressOptions o; o.format = fmt; o.level = 5;
+		NextZipEngine::CompressOptions o; o.format = fmt; o.level = 5;
 		if (!e.compress(dest, o, inputs)) {
 			printf("FAIL compress %s: %s\n", fmt.c_str(), e.error().c_str()); return 1;
 		}
-		NineZipEngine r; r.setEnginePath(engine);
+		NextZipEngine r; r.setEnginePath(engine);
 		if (!r.open(dest)) { printf("FAIL reopen %s: %s\n", fmt.c_str(), r.error().c_str()); return 1; }
 		printf("compress %-3s OK → %zu entries, format=%s\n", fmt.c_str(), r.entries().size(), r.format().c_str());
 	}
 
 	// 2) delete one entry from the zip
 	{
-		NineZipEngine e; e.setEnginePath(engine);
+		NextZipEngine e; e.setEnginePath(engine);
 		std::string dest = out + "/out.zip";
 		if (!e.open(dest)) { printf("FAIL open zip: %s\n", e.error().c_str()); return 1; }
 		size_t before = e.entries().size();
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
 		std::string err, hex;
 		std::string probe = out + "/out.7z";
 		for (std::string algo : {std::string("CRC32"), std::string("MD5"), std::string("SHA1"), std::string("SHA256")}) {
-			if (!NineZipEngine::checksumFile(probe, algo, hex, err)) { printf("FAIL checksum %s: %s\n", algo.c_str(), err.c_str()); return 1; }
+			if (!NextZipEngine::checksumFile(probe, algo, hex, err)) { printf("FAIL checksum %s: %s\n", algo.c_str(), err.c_str()); return 1; }
 			printf("%-7s %s\n", algo.c_str(), hex.c_str());
 		}
 	}

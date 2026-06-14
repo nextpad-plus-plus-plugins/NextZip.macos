@@ -1,12 +1,12 @@
 /*
- * NineZipDialogs.mm — programmatic modal dialogs (Add / Extract / Info),
+ * NextZipDialogs.mm — programmatic modal dialogs (Add / Extract / Info),
  * faithful to the Windows 7-Zip windows (see docs/windows-screens). Control
  * layout, per-format enable/disable, method/dict/word lists and the property
  * mapping mirror CompressDialog.cpp / UpdateGUI.cpp.
  *
- * NineZip 2026 (GPL).
+ * NextZip 2026 (GPL).
  */
-#import "NineZipDialogs.h"
+#import "NextZipDialogs.h"
 
 @implementation NZAddOptions @end
 @implementation NZExtractOptions @end
@@ -494,7 +494,7 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 @end
 
 // ════════════════════════════════════════════════════════════════════════════
-@implementation NineZipDialogs
+@implementation NextZipDialogs
 
 + (NZAddOptions*)runAddForInputs:(NSArray<NSString*>*)inputs {
 	if (inputs.count == 0) return nil;

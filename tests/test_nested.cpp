@@ -1,4 +1,4 @@
-// Headless validation of NineZip's nested .tar.gz descent + save-back re-wrap.
+// Headless validation of NextZip's nested .tar.gz descent + save-back re-wrap.
 #include "SevenZipEngine.h"
 #include <cstdio>
 #include <string>
@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
 	std::string engine = argv[1], tgz = argv[2], work = argv[3], target = argv[4];
 
 	// 1) open outer (gzip) — expect exactly one entry: the inner tar
-	NineZipEngine gz; gz.setEnginePath(engine);
+	NextZipEngine gz; gz.setEnginePath(engine);
 	if (!gz.open(tgz)) { printf("FAIL open outer: %s\n", gz.error().c_str()); return 1; }
 	printf("outer: format=%s entries=%zu\n", gz.format().c_str(), gz.entries().size());
 	if (gz.entries().size() != 1) { printf("FAIL: expected 1 entry in gzip\n"); return 1; }
@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
 	printf("inner tar=%s\n", innerTar.c_str());
 
 	// 3) open inner tar, list files
-	NineZipEngine tar; tar.setEnginePath(engine);
+	NextZipEngine tar; tar.setEnginePath(engine);
 	if (!tar.open(innerTar)) { printf("FAIL open inner tar: %s\n", tar.error().c_str()); return 1; }
 	printf("inner: format=%s entries=%zu\n", tar.format().c_str(), tar.entries().size());
 	for (auto& e : tar.entries()) printf("   - %s (%llu)\n", e.path.c_str(), (unsigned long long)e.size);
@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
 	printf("updated inner tar OK\n");
 
 	// 5) re-wrap: replace the gzip's single payload with the updated inner tar
-	NineZipEngine gz2; gz2.setEnginePath(engine);
+	NextZipEngine gz2; gz2.setEnginePath(engine);
 	if (!gz2.open(tgz)) { printf("FAIL reopen outer: %s\n", gz2.error().c_str()); return 1; }
 	if (!gz2.updateFile(childName, innerTar)) { printf("FAIL re-wrap gzip: %s\n", gz2.error().c_str()); return 1; }
 	printf("re-wrapped gzip OK\n");

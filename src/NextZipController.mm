@@ -1,16 +1,16 @@
 /*
- * NineZipController.mm — the NineZip archive File-Manager window.
+ * NextZipController.mm — the NextZip archive File-Manager window.
  *
  * Browse an archive like a filesystem (folder tree built from entry paths),
  * breadcrumb + Up navigation, toolbar (Open/Up/Extract/Test/Info), and — the
  * point — open a file from the archive in the Nextpad++ editor by extracting it
  * on the fly to a temp folder, plus Extract/Test to disk.
  *
- * NineZip 2026 (GPL). Engine: 7-Zip (LGPL + unRAR restriction; RAR extract-only).
+ * NextZip 2026 (GPL). Engine: 7-Zip (LGPL + unRAR restriction; RAR extract-only).
  */
 #import <Cocoa/Cocoa.h>
-#include "NineZipController.h"
-#include "NineZipDialogs.h"
+#include "NextZipController.h"
+#include "NextZipDialogs.h"
 #include "NppPluginInterfaceMac.h"
 #include "SevenZipEngine.h"
 #include <memory>
@@ -22,7 +22,7 @@
 #include <map>
 #include <utility>
 
-extern "C" NppData* NineZip_HostData();
+extern "C" NppData* NextZip_HostData();
 
 // ── virtual folder tree built from the flat entry list ───────────────────────
 namespace {
@@ -127,14 +127,14 @@ BOOL looksLikeArchive(NSString* path) {
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
-@interface NineZipController () <NSTableViewDataSource, NSTableViewDelegate,
+@interface NextZipController () <NSTableViewDataSource, NSTableViewDelegate,
                                 NSOutlineViewDataSource, NSOutlineViewDelegate,
                                 NSMenuDelegate, NSWindowDelegate>
 @end
 
-@implementation NineZipController {
+@implementation NextZipController {
 	const NppData*                 _npp;
-	std::unique_ptr<NineZipEngine> _engine;
+	std::unique_ptr<NextZipEngine> _engine;
 	FMNode*                        _root;
 	FMNode*                        _cwd;
 	std::vector<FMNode*>           _ancestors;   // root..cwd, parallel to breadcrumb items
@@ -156,12 +156,12 @@ BOOL looksLikeArchive(NSString* path) {
 }
 
 static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
-	NppData* d = NineZip_HostData();
+	NppData* d = NextZip_HostData();
 	return d ? d->_sendMessage(d->_nppHandle, msg, w, l) : 0;
 }
 
 - (instancetype)initWithNpp:(const NppData*)npp {
-	if ((self = [super init])) { _npp = npp; _engine.reset(new NineZipEngine()); _root = _cwd = nullptr; }
+	if ((self = [super init])) { _npp = npp; _engine.reset(new NextZipEngine()); _root = _cwd = nullptr; }
 	return self;
 }
 - (void)dealloc { freeTree(_root); }
@@ -297,7 +297,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	[_fsOutline reloadData];
 
 	// Register as a dockable panel (like AnalysePlugin/NppFTP); host strong-retains the view.
-	_panelHandle = (void*)hostMsg(NPPM_DMM_REGISTERPANEL, (uintptr_t)v, (intptr_t)"NineZip");
+	_panelHandle = (void*)hostMsg(NPPM_DMM_REGISTERPANEL, (uintptr_t)v, (intptr_t)"NextZip");
 }
 
 - (void)show {
@@ -319,7 +319,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 }
 - (void)openCurrentEditorFile {
 	char path[4096]; path[0] = 0;
-	NppData* d = NineZip_HostData();
+	NppData* d = NextZip_HostData();
 	if (d) d->_sendMessage(d->_nppHandle, NPPM_GETFULLCURRENTPATH, sizeof(path), (intptr_t)path);
 	if (path[0]) [self openArchiveAtPath:[NSString stringWithUTF8String:path]];
 	else         [self showOpenPanel];
@@ -350,7 +350,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		NSArray<NSString*>* kids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:tmpDir error:nil];
 		if (kids.count != 1) break;
 		NSString* innerPath = [tmpDir stringByAppendingPathComponent:kids[0]];
-		std::unique_ptr<NineZipEngine> probe(new NineZipEngine());
+		std::unique_ptr<NextZipEngine> probe(new NextZipEngine());
 		if (!probe->open(innerPath.UTF8String)) break;              // plain file → keep the single entry
 		_layers.back().second = childName;                          // remember for re-wrap on save
 		_layers.push_back({ std::string(innerPath.UTF8String), std::string() });
@@ -367,7 +367,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 // A fresh unique temp dir for one unwrapped layer (kept for the session so
 // save-back can re-wrap even after navigating away).
 - (NSString*)newLayerTempDir {
-	NSString* base = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"NineZip"]
+	NSString* base = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"NextZip"]
 	                   stringByAppendingPathComponent:@"layers"];
 	NSString* dir = [base stringByAppendingPathComponent:[[NSProcessInfo processInfo] globallyUniqueString]];
 	[[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -548,7 +548,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 // ── open a file from the archive in the editor (extract on the fly) ─────────────
 - (void)openEntryInEditor:(FMNode*)n {
 	if (n->entryIndex < 0) return;
-	NSString* base = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"NineZip"]
+	NSString* base = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"NextZip"]
 	                   stringByAppendingPathComponent:_archivePath.lastPathComponent];
 	if (!_engine->extract({(uint32_t)n->entryIndex}, base.UTF8String)) {
 		[self alert:@"Could not extract file" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
@@ -564,7 +564,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	OpenedTemp ot{ _engine->entries()[n->entryIndex].path, _layers };
 	auto res = _openedTemps.insert_or_assign(std::string(full.UTF8String), std::move(ot));
 	const char* stablePath = res.first->first.c_str();
-	NppData* d = NineZip_HostData();
+	NppData* d = NextZip_HostData();
 	if (d) d->_sendMessage(d->_nppHandle, NPPM_DOOPEN, 0, (intptr_t)stablePath);
 }
 
@@ -585,7 +585,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	bool ok = [self rewriteChain:chain entry:entry from:std::string(savedPath.UTF8String) error:err];
 	if (!ok) { [self alert:@"Could not save back to archive" info:[NSString stringWithUTF8String:err.c_str()]]; return; }
 
-	NSLog(@"[NineZip] saved '%s' back into %s", entry.c_str(), chain.front().first.c_str());
+	NSLog(@"[NextZip] saved '%s' back into %s", entry.c_str(), chain.front().first.c_str());
 	// If what we just rewrote is the archive currently on screen, refresh the view.
 	if (_archivePath && chain.back().first == std::string(_archivePath.UTF8String) && _root) {
 		_engine->open(_archivePath.UTF8String);
@@ -600,7 +600,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
                 from:(const std::string&)srcFile error:(std::string&)err {
 	// innermost: replace the edited entry
 	{
-		NineZipEngine inner;
+		NextZipEngine inner;
 		if (!inner.open(chain.back().first) || !inner.updateFile(entry, srcFile)) {
 			err = inner.error().empty() ? "could not open innermost archive" : inner.error();
 			return NO;
@@ -611,7 +611,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		const std::string& parent     = chain[(size_t)i].first;
 		const std::string& childName  = chain[(size_t)i].second;   // entry in parent that is the child
 		const std::string& childFile  = chain[(size_t)i + 1].first;
-		NineZipEngine e;
+		NextZipEngine e;
 		if (!e.open(parent) || !e.updateFile(childName, childFile)) {
 			err = e.error().empty() ? "could not re-wrap nested archive" : e.error();
 			return NO;
@@ -658,7 +658,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 - (void)fsAdd:(id)s {
 	NSArray<NSString*>* inputs = [self selectedFsPaths];
 	if (inputs.count == 0) { [self alert:@"Add to Archive" info:@"Select one or more files or folders first."]; return; }
-	NZAddOptions* o = [NineZipDialogs runAddForInputs:inputs];
+	NZAddOptions* o = [NextZipDialogs runAddForInputs:inputs];
 	if (!o) return;
 	[self performAdd:o inputs:inputs];
 }
@@ -689,7 +689,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		[a addButtonWithTitle:@"Overwrite"]; [a addButtonWithTitle:@"Cancel"];
 		if ([a runModal] != NSAlertFirstButtonReturn) return;
 	}
-	NineZipEngine::CompressOptions opt;
+	NextZipEngine::CompressOptions opt;
 	opt.format        = o.format.UTF8String;
 	opt.level         = o.level;
 	opt.method        = o.method.length ? o.method.UTF8String : "";
@@ -715,7 +715,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 - (void)fsExtract:(id)s {
 	NSString* a = [self singleArchiveSelection];
 	if (!a) { [self alert:@"Extract" info:@"Select a single archive file first."]; return; }
-	NZExtractOptions* o = [NineZipDialogs runExtractForArchive:a];
+	NZExtractOptions* o = [NextZipDialogs runExtractForArchive:a];
 	if (!o) return;
 	NSString* dest = o.destDir;
 	if (o.intoSubfolder) dest = [dest stringByAppendingPathComponent:[[a lastPathComponent] stringByDeletingPathExtension]];
@@ -735,7 +735,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 - (void)extractArchive:(NSString*)archivePath to:(NSString*)dest password:(NSString*)pw
                flatten:(BOOL)flatten overwrite:(int)overwrite eliminateRoot:(BOOL)elim {
 	if (!archivePath.length || !dest.length) return;
-	NineZipEngine eng;                                  // fresh engine — don't disturb the open view
+	NextZipEngine eng;                                  // fresh engine — don't disturb the open view
 	if (!eng.open(archivePath.UTF8String)) {
 		[self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return;
 	}
@@ -750,7 +750,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 - (void)fsTest:(id)s {
 	NSString* a = [self singleArchiveSelection];
 	if (!a) { [self alert:@"Test archive" info:@"Select a single archive file first."]; return; }
-	NineZipEngine eng;
+	NextZipEngine eng;
 	if (!eng.open(a.UTF8String)) { [self alert:@"Test failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return; }
 	bool ok = eng.test({});
 	unsigned long long files = 0, folders = 0, size = 0, packed = 0;
@@ -759,7 +759,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		@"Archive: %@\n\nArchives: 1\nPacked Size: %llu bytes\nFolders: %llu\nFiles: %llu\nSize: %llu bytes\n\n%@",
 		a.lastPathComponent, packed, folders, files, size,
 		ok ? @"There are no errors" : [NSString stringWithUTF8String:eng.error().c_str()]];
-	[NineZipDialogs showInfoTitle:@"Testing" text:msg];
+	[NextZipDialogs showInfoTitle:@"Testing" text:msg];
 }
 
 - (void)fsDelete:(id)s {
@@ -809,7 +809,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		if (![algo isEqualToString:@"CRC32"]) [algos addObject:algo];
 		for (NSString* a in algos) {
 			std::string hex, err;
-			if (NineZipEngine::checksumFile(singleFile.UTF8String, a.UTF8String, hex, err))
+			if (NextZipEngine::checksumFile(singleFile.UTF8String, a.UTF8String, hex, err))
 				[msg appendFormat:@"%-7@ %s\n", a, hex.c_str()];
 			else
 				[msg appendFormat:@"%-7@ (%s)\n", a, err.c_str()];
@@ -817,7 +817,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	} else {
 		[msg appendString:@"\n(Select a single file to compute its checksum.)"];
 	}
-	[NineZipDialogs showInfoTitle:@"Checksum information" text:msg];
+	[NextZipDialogs showInfoTitle:@"Checksum information" text:msg];
 }
 - (void)fsOpenArchiveMenu:(id)s {
 	NSString* a = [self singleFsSelection];
@@ -856,7 +856,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 }
 - (BOOL)rewrapOutwardFromInner:(std::string&)err {
 	for (long i = (long)_layers.size() - 2; i >= 0; i--) {
-		NineZipEngine e;
+		NextZipEngine e;
 		if (!e.open(_layers[(size_t)i].first) || !e.updateFile(_layers[(size_t)i].second, _layers[(size_t)i + 1].first)) {
 			err = e.error().empty() ? "re-wrap failed" : e.error(); return NO;
 		}
@@ -963,7 +963,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	if (!n) {
 		NSString* nested = (_layers.size() > 1)
 			? [NSString stringWithFormat:@"\n(unwrapped %lu nested layers)", (unsigned long)_layers.size() - 1] : @"";
-		[self alert:@"NineZip" info:[NSString stringWithFormat:@"Archive: %@\nFormat: %s\nItems: %zu%@",
+		[self alert:@"NextZip" info:[NSString stringWithFormat:@"Archive: %@\nFormat: %s\nItems: %zu%@",
 			_displayPath ?: _archivePath, _engine->format().c_str(), _engine->entries().size(), nested]]; return;
 	}
 	if (n->entryIndex < 0) { [self alert:@"Folder" info:[NSString stringWithUTF8String:n->name.c_str()]]; return; }
@@ -976,7 +976,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 }
 
 - (void)showAbout {
-	[self alert:@"NineZip" info:@"Archive manager for Nextpad++.\n\nEngine: 7-Zip (LGPL).\n"
+	[self alert:@"NextZip" info:@"Archive manager for Nextpad++.\n\nEngine: 7-Zip (LGPL).\n"
 	  "Extracts every format 7-Zip supports, including RAR / RAR5.\n"
 	  "RAR is extraction-only (unRAR license — RAR archives cannot be created).\n\nGPL."];
 }

@@ -1,24 +1,24 @@
 /*
- * NineZipPlugin.mm — Nextpad++ macOS plugin entry for NineZip.
- * Five required exports + menu commands; owns the NineZipController.
+ * NextZipPlugin.mm — Nextpad++ macOS plugin entry for NextZip.
+ * Five required exports + menu commands; owns the NextZipController.
  *
- * NineZip 2026 (GPL). Engine: 7-Zip (LGPL + unRAR restriction).
+ * NextZip 2026 (GPL). Engine: 7-Zip (LGPL + unRAR restriction).
  */
 #include "NppPluginInterfaceMac.h"
 #include "Scintilla.h"
 #import <Cocoa/Cocoa.h>
-#include "NineZipController.h"
+#include "NextZipController.h"
 
-static const char* PLUGIN_NAME = "NineZip";
+static const char* PLUGIN_NAME = "NextZip";
 static const int   NB_FUNC = 5;
 static FuncItem    funcItem[NB_FUNC];
 static NppData     nppData;
-static NineZipController* g_controller = nil;
+static NextZipController* g_controller = nil;
 
-extern "C" NppData* NineZip_HostData() { return &nppData; }
+extern "C" NppData* NextZip_HostData() { return &nppData; }
 
-static NineZipController* controller() {
-	if (!g_controller) g_controller = [[NineZipController alloc] initWithNpp:&nppData];
+static NextZipController* controller() {
+	if (!g_controller) g_controller = [[NextZipController alloc] initWithNpp:&nppData];
 	return g_controller;
 }
 
@@ -31,7 +31,7 @@ static void cmdAbout()        { [controller() showAbout]; }
 // ── exports ───────────────────────────────────────────────────────────────────
 extern "C" NPP_EXPORT void setInfo(NppData data) {
 	nppData = data;
-	strlcpy(funcItem[0]._itemName, "Show NineZip Archive Manager", NPP_MENU_ITEM_SIZE);
+	strlcpy(funcItem[0]._itemName, "Show NextZip Archive Manager", NPP_MENU_ITEM_SIZE);
 	funcItem[0]._pFunc = cmdShowPanel;   funcItem[0]._init2Check = false; funcItem[0]._pShKey = nullptr;
 	strlcpy(funcItem[1]._itemName, "Open Archive…",            NPP_MENU_ITEM_SIZE);
 	funcItem[1]._pFunc = cmdOpenArchive; funcItem[1]._init2Check = false; funcItem[1]._pShKey = nullptr;
@@ -39,7 +39,7 @@ extern "C" NPP_EXPORT void setInfo(NppData data) {
 	funcItem[2]._pFunc = cmdOpenCurrent; funcItem[2]._init2Check = false; funcItem[2]._pShKey = nullptr;
 	strlcpy(funcItem[3]._itemName, "—",                        NPP_MENU_ITEM_SIZE);
 	funcItem[3]._pFunc = nullptr;        funcItem[3]._init2Check = false; funcItem[3]._pShKey = nullptr;
-	strlcpy(funcItem[4]._itemName, "About NineZip",            NPP_MENU_ITEM_SIZE);
+	strlcpy(funcItem[4]._itemName, "About NextZip",            NPP_MENU_ITEM_SIZE);
 	funcItem[4]._pFunc = cmdAbout;       funcItem[4]._init2Check = false; funcItem[4]._pShKey = nullptr;
 }
 

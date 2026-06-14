@@ -1,9 +1,9 @@
 /*
- * SevenZipEngine.h — NineZip's C++ wrapper around the in-process 7-Zip engine
+ * SevenZipEngine.h — NextZip's C++ wrapper around the in-process 7-Zip engine
  * (the vendored 7z.so loaded via dlopen). Exposes a clean, SDK-free interface so
  * the ObjC++ UI never touches the COM/PROPVARIANT details.
  *
- * NineZip (Nextpad++ archive plugin) 2026. Engine: 7-Zip (LGPL + unRAR restriction).
+ * NextZip (Nextpad++ archive plugin) 2026. Engine: 7-Zip (LGPL + unRAR restriction).
  */
 #ifndef NINEZIP_SEVENZIPENGINE_H
 #define NINEZIP_SEVENZIPENGINE_H
@@ -25,13 +25,13 @@ struct NZEntry {
 	std::string method;      // e.g. "LZMA2", "Deflate"
 };
 
-class NineZipEngine {
+class NextZipEngine {
 public:
-	NineZipEngine();
-	~NineZipEngine();
+	NextZipEngine();
+	~NextZipEngine();
 
 	// Explicitly point at the bundled 7z.so; if never called, open() auto-resolves
-	// it next to the loaded plugin dylib (…/plugins/NineZip/7z.so).
+	// it next to the loaded plugin dylib (…/plugins/NextZip/7z.so).
 	void        setEnginePath(const std::string& dylibPath);
 	bool        loadEngine();           // dlopen + resolve CreateObject
 	bool        isEngineLoaded() const;
@@ -92,7 +92,7 @@ public:
 	// rewriting it in place and re-opening. Writable formats only.
 	bool deleteEntries(const std::vector<uint32_t>& indices);
 
-	// Is the named format one NineZip can write/create? (7z/zip/tar/gz/bz2/xz/wim)
+	// Is the named format one NextZip can write/create? (7z/zip/tar/gz/bz2/xz/wim)
 	static bool isWritableFormat(const std::string& format);
 
 	// Compute a file checksum. algo ∈ CRC32/MD5/SHA1/SHA256/SHA384/SHA512.
@@ -103,8 +103,8 @@ public:
 	const std::string& archivePath() const { return m_archivePath; }
 
 private:
-	NineZipEngine(const NineZipEngine&) = delete;
-	NineZipEngine& operator=(const NineZipEngine&) = delete;
+	NextZipEngine(const NextZipEngine&) = delete;
+	NextZipEngine& operator=(const NextZipEngine&) = delete;
 	struct Impl;
 	Impl*                m_impl;
 	std::vector<NZEntry> m_entries;

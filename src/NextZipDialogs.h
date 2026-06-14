@@ -1,9 +1,9 @@
 /*
- * NineZipDialogs.h — modal Cocoa dialogs modeled on the Windows 7-Zip windows
+ * NextZipDialogs.h — modal Cocoa dialogs modeled on the Windows 7-Zip windows
  * (Add to Archive, Extract, Checksum/Info). Built programmatically; each returns
  * a plain options object (nil = the user cancelled).
  *
- * NineZip 2026 (GPL).
+ * NextZip 2026 (GPL).
  */
 #import <Cocoa/Cocoa.h>
 
@@ -41,7 +41,7 @@
 @property (copy)   NSString* password;      // @"" = none
 @end
 
-@interface NineZipDialogs : NSObject
+@interface NextZipDialogs : NSObject
 // Returns nil if cancelled. `inputs` = the filesystem paths being compressed.
 + (nullable NZAddOptions*)runAddForInputs:(nonnull NSArray<NSString*>*)inputs;
 // Returns nil if cancelled. `archivePath` seeds the default destination.

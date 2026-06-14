@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the 7-Zip engine (Format7zF: all formats + codecs) as a universal
-# arm64+x86_64 shared library -> deps/7z.so. The NineZip plugin dlopen()s this
+# arm64+x86_64 shared library -> deps/7z.so. The NextZip plugin dlopen()s this
 # at runtime and calls CreateObject / IInArchive / IOutArchive.
 #
 # The 7-Zip source (deps/7zip/) is NOT vendored in git — it is fetched on first

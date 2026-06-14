@@ -1,11 +1,11 @@
 /*
- * SevenZipEngine.cpp — in-process 7-Zip wrapper for NineZip.
+ * SevenZipEngine.cpp — in-process 7-Zip wrapper for NextZip.
  *
  * Loads the vendored 7z.so via dlopen, resolves CreateObject, and drives the
  * IInArchive COM API to open + enumerate archives. Modeled on the SDK reference
  * client (deps/7zip/CPP/7zip/UI/Client7z/Client7z.cpp).
  *
- * Engine: 7-Zip (LGPL + unRAR restriction). RAR is EXTRACT-ONLY; NextZip/NineZip
+ * Engine: 7-Zip (LGPL + unRAR restriction). RAR is EXTRACT-ONLY; NextZip/NextZip
  * must never offer "create RAR". See docs/20_format-matrix-and-rar.md.
  */
 #include "SevenZipEngine.h"
@@ -94,17 +94,17 @@ int64_t FileTimeToUnix(const NCOM::CPropVariant& p) {
 } // namespace
 
 // ── pimpl ────────────────────────────────────────────────────────────────────
-struct NineZipEngine::Impl {
+struct NextZipEngine::Impl {
 	void*              dll = nullptr;
 	Func_CreateObject  createObject = nullptr;
 	CMyComPtr<IInArchive> arc;
 };
 
-NineZipEngine::NineZipEngine() : m_impl(new Impl) {}
-NineZipEngine::~NineZipEngine() { close(); if (m_impl->dll) dlclose(m_impl->dll); delete m_impl; }
+NextZipEngine::NextZipEngine() : m_impl(new Impl) {}
+NextZipEngine::~NextZipEngine() { close(); if (m_impl->dll) dlclose(m_impl->dll); delete m_impl; }
 
-void NineZipEngine::setEnginePath(const std::string& p) { m_enginePath = p; }
-bool NineZipEngine::isEngineLoaded() const { return m_impl->createObject != nullptr; }
+void NextZipEngine::setEnginePath(const std::string& p) { m_enginePath = p; }
+bool NextZipEngine::isEngineLoaded() const { return m_impl->createObject != nullptr; }
 
 // Resolve 7z.so next to this plugin's dylib if no explicit path was given.
 static std::string defaultEnginePath() {
@@ -117,7 +117,7 @@ static std::string defaultEnginePath() {
 	return "7z.so";
 }
 
-bool NineZipEngine::loadEngine() {
+bool NextZipEngine::loadEngine() {
 	if (m_impl->createObject) return true;
 	std::string path = m_enginePath.empty() ? defaultEnginePath() : m_enginePath;
 	m_impl->dll = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
@@ -127,13 +127,13 @@ bool NineZipEngine::loadEngine() {
 	return true;
 }
 
-void NineZipEngine::close() {
+void NextZipEngine::close() {
 	if (m_impl->arc) { m_impl->arc->Close(); m_impl->arc.Release(); }
 	m_entries.clear();
 	m_format.clear();
 }
 
-bool NineZipEngine::open(const std::string& archivePath) {
+bool NextZipEngine::open(const std::string& archivePath) {
 	close();
 	if (!loadEngine()) return false;
 
@@ -288,7 +288,7 @@ Z7_COM7F_IMF(CExtractCB::CryptoGetTextPassword(BSTR* password)) {
 }
 } // namespace
 
-bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::string& destDir,
+bool NextZipEngine::extract(const std::vector<uint32_t>& indices, const std::string& destDir,
                             const std::string& password, bool flatten, int overwrite, bool eliminateRoot) {
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 
@@ -337,7 +337,7 @@ bool NineZipEngine::extract(const std::vector<uint32_t>& indices, const std::str
 	return true;
 }
 
-bool NineZipEngine::test(const std::vector<uint32_t>& indices, const std::string& password) {
+bool NextZipEngine::test(const std::vector<uint32_t>& indices, const std::string& password) {
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 	CExtractCB* cb = new CExtractCB;
 	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
@@ -411,7 +411,7 @@ Z7_COM7F_IMF(CUpdateCB::GetStream(UInt32 index, ISequentialInStream** inStream))
 Z7_COM7F_IMF(CUpdateCB::SetOperationResult(Int32 op)) { if (op != 0) NumErrors++; return S_OK; }
 } // namespace
 
-bool NineZipEngine::updateFile(const std::string& entryPath, const std::string& localFile) {
+bool NextZipEngine::updateFile(const std::string& entryPath, const std::string& localFile) {
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 	CMyComPtr<IOutArchive> outArc;
 	if (m_impl->arc->QueryInterface(IID_IOutArchive, (void**)&outArc) != S_OK || !outArc) {
@@ -560,7 +560,7 @@ Z7_COM7F_IMF(CCreateCB::CryptoGetTextPassword2(Int32* passwordIsDefined, BSTR* p
 	return PasswordIsDefined ? StringToBstr(Password, password) : S_OK;
 }
 
-// Map a NineZip format name → 7-Zip format byte id (0 = not writable here).
+// Map a NextZip format name → 7-Zip format byte id (0 = not writable here).
 Byte writableFormatId(const std::string& fmt) {
 	if (fmt == "7z")                        return 0x07;
 	if (fmt == "zip")                       return 0x01;
@@ -595,11 +595,11 @@ static void removePathRecursive(const std::string& p) {
 }
 } // namespace
 
-bool NineZipEngine::isWritableFormat(const std::string& format) {
+bool NextZipEngine::isWritableFormat(const std::string& format) {
 	return writableFormatId(format) != 0;
 }
 
-bool NineZipEngine::compress(const std::string& destPath, const CompressOptions& opt,
+bool NextZipEngine::compress(const std::string& destPath, const CompressOptions& opt,
                              const std::vector<std::string>& inputs) {
 	m_error.clear();
 	if (!loadEngine()) return false;
@@ -740,7 +740,7 @@ Z7_COM7F_IMF(CDeleteCB::GetStream(UInt32, ISequentialInStream** inStream)) { *in
 Z7_COM7F_IMF(CDeleteCB::SetOperationResult(Int32 op)) { if (op != 0) NumErrors++; return S_OK; }
 } // namespace
 
-bool NineZipEngine::deleteEntries(const std::vector<uint32_t>& indices) {
+bool NextZipEngine::deleteEntries(const std::vector<uint32_t>& indices) {
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 	CMyComPtr<IOutArchive> outArc;
 	if (m_impl->arc->QueryInterface(IID_IOutArchive, (void**)&outArc) != S_OK || !outArc) {
@@ -777,7 +777,7 @@ bool NineZipEngine::deleteEntries(const std::vector<uint32_t>& indices) {
 }
 
 // ── checksums (CommonCrypto + table CRC32) ───────────────────────────────────
-bool NineZipEngine::checksumFile(const std::string& path, const std::string& algo,
+bool NextZipEngine::checksumFile(const std::string& path, const std::string& algo,
                                  std::string& hexOut, std::string& err) {
 	FILE* f = ::fopen(path.c_str(), "rb");
 	if (!f) { err = "cannot open: " + path; return false; }
