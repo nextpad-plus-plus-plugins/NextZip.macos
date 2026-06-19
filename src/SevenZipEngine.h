@@ -57,6 +57,12 @@ public:
 	// Verify entries (decompress + CRC-check, no files written). indices empty = all.
 	bool test(const std::vector<uint32_t>& indices, const std::string& password = std::string());
 
+	// After the most recent extract()/test(): did it fail specifically because the
+	// archive is encrypted and the password was missing or wrong? Lets the UI
+	// prompt for a password and retry (Windows 7-Zip behaviour). Reset to false at
+	// the start of every extract()/test() call.
+	bool lastErrorNeedsPassword() const { return m_needPassword; }
+
 	// Replace one entry's content with the bytes of localFile, rewriting the
 	// archive in place (keeps all other entries). Only works for writable formats
 	// (7z/zip/tar/gz/bz2/xz/wim) — returns false for read-only formats like RAR.
@@ -109,6 +115,7 @@ private:
 	Impl*                m_impl;
 	std::vector<NZEntry> m_entries;
 	std::string          m_enginePath, m_format, m_error, m_archivePath;
+	bool                 m_needPassword = false;  // last extract/test failed on encryption
 };
 
 #endif // NINEZIP_SEVENZIPENGINE_H

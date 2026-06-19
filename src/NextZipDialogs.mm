@@ -53,6 +53,25 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 	id o = p.selectedItem.representedObject;
 	return [o isKindOfClass:[NSString class]] ? o : nil;
 }
+// A group box that actually sizes to its Auto-Layout content. Assigning
+// box.contentView does NOT make the box grow to fit (it stays at title height
+// and the content overflows / overlaps siblings); instead add the content into
+// the box's own contentView and pin it with 8pt insets so the box derives its
+// height from the content.
+static NSBox* nzBox(NSString* title, NSView* content) {
+	NSBox* b = [[NSBox alloc] init];
+	b.title = title;
+	b.translatesAutoresizingMaskIntoConstraints = NO;
+	content.translatesAutoresizingMaskIntoConstraints = NO;
+	[b.contentView addSubview:content];
+	[NSLayoutConstraint activateConstraints:@[
+		[content.topAnchor      constraintEqualToAnchor:b.contentView.topAnchor      constant:8],
+		[content.leadingAnchor  constraintEqualToAnchor:b.contentView.leadingAnchor  constant:8],
+		[content.trailingAnchor constraintEqualToAnchor:b.contentView.trailingAnchor constant:-8],
+		[content.bottomAnchor   constraintEqualToAnchor:b.contentView.bottomAnchor   constant:-8],
+	]];
+	return b;
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Add to Archive  (full Windows-faithful dialog)
@@ -308,9 +327,7 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 	self.deleteCheck = [NSButton checkboxWithTitle:@"Delete files after compression" target:nil action:nil];
 	NSStackView* optsStack = [NSStackView stackViewWithViews:@[self.sfxCheck, self.sharedCheck, self.deleteCheck]];
 	optsStack.orientation = NSUserInterfaceLayoutOrientationVertical; optsStack.alignment = NSLayoutAttributeLeading; optsStack.spacing = 6;
-	optsStack.edgeInsets = NSEdgeInsetsMake(8,8,8,8);
-	NSBox* optsBox = [[NSBox alloc] init]; optsBox.title = @"Options"; optsBox.contentView = optsStack;
-	optsBox.translatesAutoresizingMaskIntoConstraints = NO;
+	NSBox* optsBox = nzBox(@"Options", optsStack);
 
 	self.pwField  = [[NSSecureTextField alloc] init]; [self.pwField.widthAnchor constraintEqualToConstant:220].active = YES;
 	self.pwField2 = [[NSSecureTextField alloc] init]; [self.pwField2.widthAnchor constraintEqualToConstant:220].active = YES;
@@ -326,9 +343,7 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 		@[nzLabel(@"Encryption method:"), self.encMethodPopup],
 		@[[NSGridCell emptyContentView],  self.encNamesCheck],
 	]];
-	NSBox* encBox = [[NSBox alloc] init]; encBox.title = @"Encryption"; encBox.contentView = encGrid;
-	encBox.contentViewMargins = NSMakeSize(8,8);
-	encBox.translatesAutoresizingMaskIntoConstraints = NO;
+	NSBox* encBox = nzBox(@"Encryption", encGrid);
 
 	NSStackView* rightCol = [NSStackView stackViewWithViews:@[rtGrid, optsBox, encBox]];
 	rightCol.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -351,10 +366,7 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 	[btns.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16].active = YES;
 	[btns.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16].active = YES;
 
-	NSWindow* w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,900,620)
-		styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-	w.title = @"Add to Archive";
-	NSView* c = [[NSView alloc] initWithFrame:w.frame];
+	NSView* c = [[NSView alloc] initWithFrame:NSZeroRect];
 	[c addSubview:root];
 	[NSLayoutConstraint activateConstraints:@[
 		[root.topAnchor constraintEqualToAnchor:c.topAnchor],
@@ -362,6 +374,14 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 		[root.trailingAnchor constraintEqualToAnchor:c.trailingAnchor],
 		[root.bottomAnchor constraintEqualToAnchor:c.bottomAnchor],
 	]];
+	// Size the window to the content's natural fitting size. Pinning root to a
+	// fixed oversized window made the grids/boxes stretch and overlap; letting
+	// the content drive the size yields the compact Windows-faithful layout.
+	[c layoutSubtreeIfNeeded];
+	NSSize fit = root.fittingSize;
+	NSWindow* w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,fit.width,fit.height)
+		styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+	w.title = @"Add to Archive";
 	w.contentView = c;
 	[w center];
 	self.win = w;
@@ -494,6 +514,100 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 @end
 
 // ════════════════════════════════════════════════════════════════════════════
+// Enter-password prompt (shown on demand when extracting/opening an encrypted
+// archive, mirroring the Windows 7-Zip "Enter password" dialog).
+// ════════════════════════════════════════════════════════════════════════════
+@interface _NZPwController : NSObject
+@property (strong) NSWindow*          win;
+@property (strong) NSSecureTextField* secure;   // masked field (default)
+@property (strong) NSTextField*       plain;    // revealed field (Show Password)
+@property (strong) NSButton*          showCheck;
+@end
+
+@implementation _NZPwController
+- (void)ok:(id)s     { [NSApp stopModalWithCode:NSModalResponseOK]; }
+- (void)cancel:(id)s { [NSApp stopModalWithCode:NSModalResponseCancel]; }
+- (NSString*)text { return self.showCheck.state == NSControlStateValueOn ? self.plain.stringValue : self.secure.stringValue; }
+- (void)showToggled:(id)s {
+	BOOL show = self.showCheck.state == NSControlStateValueOn;
+	if (show) self.plain.stringValue = self.secure.stringValue;
+	else      self.secure.stringValue = self.plain.stringValue;
+	self.secure.hidden = show; self.plain.hidden = !show;
+	[self.win makeFirstResponder:(show ? self.plain : self.secure)];
+}
+- (void)buildForArchive:(NSString*)name wrong:(BOOL)wrong {
+	NSStackView* v = [[NSStackView alloc] init];
+	v.orientation = NSUserInterfaceLayoutOrientationVertical;
+	v.alignment = NSLayoutAttributeLeading; v.spacing = 10;
+	v.translatesAutoresizingMaskIntoConstraints = NO;
+	v.edgeInsets = NSEdgeInsetsMake(16,16,16,16);
+
+	[v addArrangedSubview:nzLabel(name.length
+		? [NSString stringWithFormat:@"Enter password for “%@”:", name]
+		: @"Enter password:")];
+	if (wrong) {
+		NSTextField* warn = nzLabel(@"Incorrect password — please try again.");
+		warn.textColor = [NSColor systemRedColor];
+		[v addArrangedSubview:warn];
+	}
+
+	self.secure = [[NSSecureTextField alloc] init];
+	self.plain  = [[NSTextField alloc] init];
+	self.plain.hidden = YES;
+	[v addArrangedSubview:self.secure];
+	[v addArrangedSubview:self.plain];
+	// The window sizes to fit, so a fixed-width field overflows the right border
+	// (the buttons row's trailing pin collapses the fit width). Instead give the
+	// field a minimum width and pin its trailing to the stack so it stretches to
+	// the dialog width — and grows further for long archive names — staying inset.
+	// secure/plain occupy the same slot: the stack collapses whichever is hidden.
+	[self.secure.widthAnchor constraintGreaterThanOrEqualToConstant:280].active = YES;
+	[NSLayoutConstraint activateConstraints:@[
+		[self.secure.leadingAnchor  constraintEqualToAnchor:v.leadingAnchor  constant:16],
+		[self.secure.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16],
+		[self.plain.leadingAnchor   constraintEqualToAnchor:v.leadingAnchor  constant:16],
+		[self.plain.trailingAnchor  constraintEqualToAnchor:v.trailingAnchor constant:-16],
+	]];
+
+	self.showCheck = [NSButton checkboxWithTitle:@"Show Password" target:self action:@selector(showToggled:)];
+	[v addArrangedSubview:self.showCheck];
+
+	NSButton* cancel = [NSButton buttonWithTitle:@"Cancel" target:self action:@selector(cancel:)]; cancel.keyEquivalent = @"\033";
+	NSButton* ok = [NSButton buttonWithTitle:@"OK" target:self action:@selector(ok:)]; ok.keyEquivalent = @"\r";
+	NSView* spacer = [[NSView alloc] init]; [spacer setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+	NSStackView* btns = nzRow(@[spacer, cancel, ok]);
+	[v addArrangedSubview:btns];
+	[btns.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:16].active = YES;
+	[btns.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-16].active = YES;
+
+	// Size the window to the content (no clipped controls; see nzBox note).
+	NSView* c = [[NSView alloc] initWithFrame:NSZeroRect];
+	[c addSubview:v];
+	[NSLayoutConstraint activateConstraints:@[
+		[v.topAnchor      constraintEqualToAnchor:c.topAnchor],
+		[v.leadingAnchor  constraintEqualToAnchor:c.leadingAnchor],
+		[v.trailingAnchor constraintEqualToAnchor:c.trailingAnchor],
+		[v.bottomAnchor   constraintEqualToAnchor:c.bottomAnchor],
+	]];
+	[c layoutSubtreeIfNeeded];
+	NSSize fit = c.fittingSize;
+
+	NSWindow* w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,fit.width,fit.height)
+		styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+	w.title = @"Password";
+	w.contentView = c; [w center];
+	self.win = w;
+}
+- (NSString*)run {
+	[self.win makeFirstResponder:self.secure];
+	NSModalResponse resp = [NSApp runModalForWindow:self.win];
+	[self.win orderOut:nil];
+	if (resp != NSModalResponseOK) return nil;
+	return [self text] ?: @"";
+}
+@end
+
+// ════════════════════════════════════════════════════════════════════════════
 @implementation NextZipDialogs
 
 + (NZAddOptions*)runAddForInputs:(NSArray<NSString*>*)inputs {
@@ -541,5 +655,11 @@ static NSString* nzSelStr(NSPopUpButton* p) {
 	w.contentView = c; [w center];
 	[NSApp runModalForWindow:w];
 	[w orderOut:nil];
+}
+
++ (NSString*)promptPasswordForArchive:(NSString*)archiveName wrong:(BOOL)wrong {
+	_NZPwController* c = [_NZPwController new];
+	[c buildForArchive:archiveName wrong:wrong];
+	return [c run];
 }
 @end

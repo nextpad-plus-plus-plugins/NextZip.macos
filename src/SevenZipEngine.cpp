@@ -200,6 +200,9 @@ class CExtractCB Z7_final :
 public:
 	UString Password;
 	bool    PasswordIsDefined = false;
+	bool    PasswordWasAsked = false; // CryptoGetTextPassword was called → archive is encrypted
+	bool    WrongPassword = false;    // an item reported kWrongPassword
+	bool    WriteError = false;       // failed to create an output file (NOT a password problem)
 	bool    Flatten = false;          // drop directory paths (extract basenames only)
 	int     Overwrite = 0;            // 0 overwrite, 1 skip, 2 auto-rename
 	UString StripPrefix;              // eliminate-root: drop this leading "X/" if present
@@ -270,26 +273,31 @@ Z7_COM7F_IMF(CExtractCB::GetStream(UInt32 index, ISequentialOutStream** outStrea
 
 	COutFileStream* spec = new COutFileStream;
 	CMyComPtr<ISequentialOutStream> outLoc(spec);
-	if (!spec->Create_ALWAYS(full)) { NumErrors++; return E_ABORT; }
+	if (!spec->Create_ALWAYS(full)) { WriteError = true; NumErrors++; return E_ABORT; }
 	_out = outLoc;
 	*outStream = outLoc.Detach();
 	return S_OK;
 }
 
 Z7_COM7F_IMF(CExtractCB::SetOperationResult(Int32 result)) {
-	if (result != NArchive::NExtract::NOperationResult::kOK) NumErrors++;
+	if (result != NArchive::NExtract::NOperationResult::kOK) {
+		NumErrors++;
+		if (result == NArchive::NExtract::NOperationResult::kWrongPassword) WrongPassword = true;
+	}
 	_out.Release();
 	return S_OK;
 }
 
 Z7_COM7F_IMF(CExtractCB::CryptoGetTextPassword(BSTR* password)) {
-	if (!PasswordIsDefined) return E_ABORT;   // caller can set a password later
+	PasswordWasAsked = true;                   // the archive is encrypted
+	if (!PasswordIsDefined) return E_ABORT;    // no password yet → caller prompts + retries
 	return StringToBstr(Password, password);
 }
 } // namespace
 
 bool NextZipEngine::extract(const std::vector<uint32_t>& indices, const std::string& destDir,
                             const std::string& password, bool flatten, int overwrite, bool eliminateRoot) {
+	m_needPassword = false;
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 
 	const FString fdest = us2fs(GetUnicodeString(destDir.c_str()));
@@ -332,12 +340,27 @@ bool NextZipEngine::extract(const std::vector<uint32_t>& indices, const std::str
 	const UInt32  num = sorted.empty() ? (UInt32)(Int32)-1 : (UInt32)sorted.size();
 
 	HRESULT hr = m_impl->arc->Extract(idx, num, BoolToInt(false), cbPtr);
-	if (hr != S_OK)       { m_error = "extract failed"; return false; }
-	if (cb->NumErrors)    { m_error = "extract completed with errors"; return false; }
+	// An encrypted archive whose password is missing/wrong aborts (E_ABORT from
+	// CryptoGetTextPassword) or decrypts to garbage that fails its CRC. Either way
+	// the callback was asked for a password and no genuine write error occurred —
+	// flag it so the UI can prompt and retry. WriteError (disk full etc.) is NOT a
+	// password problem even though it also aborts.
+	bool pwIssue = cb->PasswordWasAsked && !cb->WriteError;
+	if (hr != S_OK) {
+		if (pwIssue) { m_needPassword = true; m_error = password.empty() ? "password required" : "wrong password"; }
+		else m_error = "extract failed";
+		return false;
+	}
+	if (cb->NumErrors) {
+		if (pwIssue) { m_needPassword = true; m_error = password.empty() ? "password required" : "wrong password"; }
+		else m_error = "extract completed with errors";
+		return false;
+	}
 	return true;
 }
 
 bool NextZipEngine::test(const std::vector<uint32_t>& indices, const std::string& password) {
+	m_needPassword = false;
 	if (!m_impl->arc) { m_error = "no archive open"; return false; }
 	CExtractCB* cb = new CExtractCB;
 	CMyComPtr<IArchiveExtractCallback> cbPtr(cb);
@@ -348,8 +371,17 @@ bool NextZipEngine::test(const std::vector<uint32_t>& indices, const std::string
 	const UInt32* idx = sorted.empty() ? NULL : sorted.data();
 	const UInt32  num = sorted.empty() ? (UInt32)(Int32)-1 : (UInt32)sorted.size();
 	HRESULT hr = m_impl->arc->Extract(idx, num, BoolToInt(true), cbPtr);   // testMode = true
-	if (hr != S_OK)    { m_error = "test failed"; return false; }
-	if (cb->NumErrors) { m_error = "test found errors (bad CRC / corrupt)"; return false; }
+	bool pwIssue = cb->PasswordWasAsked && !cb->WriteError;
+	if (hr != S_OK) {
+		if (pwIssue) { m_needPassword = true; m_error = password.empty() ? "password required" : "wrong password"; }
+		else m_error = "test failed";
+		return false;
+	}
+	if (cb->NumErrors) {
+		if (pwIssue) { m_needPassword = true; m_error = password.empty() ? "password required" : "wrong password"; }
+		else m_error = "test found errors (bad CRC / corrupt)";
+		return false;
+	}
 	return true;
 }
 

@@ -70,6 +70,28 @@ FMNode* findOrAddDir(FMNode* p, const std::string& name) {
 	p->children.push_back(n); return n;
 }
 
+// Path of a node as a list of folder names from the root (root excluded). Used
+// to re-resolve the current directory after the tree is freed + rebuilt.
+std::vector<std::string> nodePath(FMNode* n) {
+	std::vector<std::string> p;
+	for (FMNode* c = n; c && c->parent; c = c->parent) p.push_back(c->name);
+	std::reverse(p.begin(), p.end());
+	return p;
+}
+
+// Find a directory node by its name-path in a (re)built tree; nullptr if any
+// component is missing (e.g. the folder was removed).
+FMNode* findDirByPath(FMNode* root, const std::vector<std::string>& path) {
+	FMNode* cur = root;
+	for (const std::string& name : path) {
+		FMNode* next = nullptr;
+		for (auto c : cur->children) if (c->isDir && c->name == name) { next = c; break; }
+		if (!next) return nullptr;
+		cur = next;
+	}
+	return cur;
+}
+
 FMNode* buildTree(const std::vector<NZEntry>& entries) {
 	FMNode* root = new FMNode; root->isDir = true;
 	for (int i = 0; i < (int)entries.size(); i++) {
@@ -139,6 +161,7 @@ BOOL looksLikeArchive(NSString* path) {
 	FMNode*                        _cwd;
 	std::vector<FMNode*>           _ancestors;   // root..cwd, parallel to breadcrumb items
 	NSString*                      _archivePath;   // innermost archive the engine is open on (may be a temp)
+	NSString*                      _archivePassword; // password that unlocked the on-screen archive (session cache)
 	NSString*                      _displayPath;   // outermost real file the user clicked (for the breadcrumb)
 	ArcChain                       _layers;        // outer→inner nested-archive chain for the current view
 	NSView*                        _panelView;     // dock-panel content (registered with the host)
@@ -333,6 +356,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		return;
 	}
 	_displayPath = path;
+	_archivePassword = nil;            // a different archive → forget the cached password
 	_layers.clear();
 	_layers.push_back({ std::string(path.UTF8String), std::string() });
 
@@ -545,15 +569,75 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	}
 }
 
+// ── password-aware extract / test ───────────────────────────────────────────
+// Extract `indices` via `eng`, prompting for a password and retrying whenever the
+// archive turns out to be encrypted (Windows 7-Zip behaviour). `initialPw` seeds
+// the first attempt (e.g. the Extract dialog's optional field). Returns YES on
+// success; shows an alert and returns NO on a genuine (non-password) failure;
+// returns NO silently if the user cancels the password prompt.
+- (BOOL)extractWithEngine:(NextZipEngine*)eng
+                  indices:(const std::vector<uint32_t>&)indices
+                       to:(NSString*)dest
+                initialPw:(NSString*)initialPw
+                  flatten:(BOOL)flatten
+                overwrite:(int)overwrite
+            eliminateRoot:(BOOL)elim
+              archiveName:(NSString*)name
+             usedPassword:(NSString* _Nullable * _Nullable)outPw {
+	std::string pw = initialPw.length ? std::string(initialPw.UTF8String) : std::string();
+	BOOL retried = (initialPw.length > 0);
+	for (;;) {
+		if (eng->extract(indices, dest.UTF8String, pw, flatten ? true : false, overwrite, elim ? true : false)) {
+			if (outPw) *outPw = pw.empty() ? nil : [NSString stringWithUTF8String:pw.c_str()];
+			return YES;
+		}
+		if (!eng->lastErrorNeedsPassword()) {
+			[self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng->error().c_str()]];
+			return NO;
+		}
+		NSString* entered = [NextZipDialogs promptPasswordForArchive:name wrong:retried];
+		if (entered == nil) return NO;           // user cancelled
+		pw = std::string(entered.UTF8String);
+		retried = YES;
+	}
+}
+
+// As above, for "Test archive" (no files written). Returns YES if the archive
+// verifies. On failure leaves eng->error() set for the caller to display; returns
+// NO silently if the user cancels the password prompt.
+- (BOOL)testWithEngine:(NextZipEngine*)eng
+               indices:(const std::vector<uint32_t>&)indices
+             initialPw:(NSString*)initialPw
+           archiveName:(NSString*)name
+          usedPassword:(NSString* _Nullable * _Nullable)outPw {
+	std::string pw = initialPw.length ? std::string(initialPw.UTF8String) : std::string();
+	BOOL retried = (initialPw.length > 0);
+	for (;;) {
+		if (eng->test(indices, pw)) {
+			if (outPw) *outPw = pw.empty() ? nil : [NSString stringWithUTF8String:pw.c_str()];
+			return YES;
+		}
+		if (!eng->lastErrorNeedsPassword()) return NO;   // genuine error → caller shows eng->error()
+		NSString* entered = [NextZipDialogs promptPasswordForArchive:name wrong:retried];
+		if (entered == nil) return NO;           // user cancelled
+		pw = std::string(entered.UTF8String);
+		retried = YES;
+	}
+}
+
 // ── open a file from the archive in the editor (extract on the fly) ─────────────
 - (void)openEntryInEditor:(FMNode*)n {
 	if (n->entryIndex < 0) return;
 	NSString* base = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"NextZip"]
 	                   stringByAppendingPathComponent:_archivePath.lastPathComponent];
-	if (!_engine->extract({(uint32_t)n->entryIndex}, base.UTF8String)) {
-		[self alert:@"Could not extract file" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
-		return;
+	std::vector<uint32_t> one{ (uint32_t)n->entryIndex };
+	NSString* usedPw = nil;
+	if (![self extractWithEngine:_engine.get() indices:one to:base initialPw:_archivePassword
+	                     flatten:NO overwrite:0 eliminateRoot:NO archiveName:_archivePath.lastPathComponent
+	                usedPassword:&usedPw]) {
+		return;   // alert already shown, or user cancelled the password prompt
 	}
+	_archivePassword = usedPw;   // remember it so further files from this archive don't re-prompt
 	NSString* rel  = [NSString stringWithUTF8String:_engine->entries()[n->entryIndex].path.c_str()];
 	NSString* full = [base stringByAppendingPathComponent:rel];
 	// Record this temp ↔ archive entry (incl. the nested-archive chain) FIRST, then
@@ -588,8 +672,15 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	NSLog(@"[NextZip] saved '%s' back into %s", entry.c_str(), chain.front().first.c_str());
 	// If what we just rewrote is the archive currently on screen, refresh the view.
 	if (_archivePath && chain.back().first == std::string(_archivePath.UTF8String) && _root) {
+		// Capture the current folder by PATH first: _cwd points into the tree we
+		// are about to free, so navigating to it post-rebuild would dereference a
+		// dangling node and the just-saved file would appear to vanish until the
+		// next fresh open. Re-resolve the same path in the rebuilt tree instead.
+		std::vector<std::string> cwdPath = _cwd ? nodePath(_cwd) : std::vector<std::string>();
 		_engine->open(_archivePath.UTF8String);
-		freeTree(_root); _root = buildTree(_engine->entries()); [self navigateTo:_cwd ? _cwd : _root];
+		freeTree(_root); _root = buildTree(_engine->entries());
+		FMNode* dest = findDirByPath(_root, cwdPath);
+		[self navigateTo:dest ? dest : _root];
 	}
 }
 
@@ -740,11 +831,12 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 		[self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return;
 	}
 	std::vector<uint32_t> all;                          // empty = everything
-	bool ok = eng.extract(all, dest.UTF8String, pw ? pw.UTF8String : "", flatten ? true : false,
-	                      overwrite, elim ? true : false);
+	BOOL ok = [self extractWithEngine:&eng indices:all to:dest initialPw:pw
+	                          flatten:flatten overwrite:overwrite eliminateRoot:elim
+	                      archiveName:archivePath.lastPathComponent usedPassword:NULL];
 	[self refreshFs];
 	if (ok) [self alert:@"Extract" info:[NSString stringWithFormat:@"Extracted to:\n%@", dest]];
-	else    [self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]];
+	// failure alert (or silent cancel) is handled inside the helper
 }
 
 - (void)fsTest:(id)s {
@@ -752,7 +844,8 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	if (!a) { [self alert:@"Test archive" info:@"Select a single archive file first."]; return; }
 	NextZipEngine eng;
 	if (!eng.open(a.UTF8String)) { [self alert:@"Test failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return; }
-	bool ok = eng.test({});
+	std::vector<uint32_t> none;
+	BOOL ok = [self testWithEngine:&eng indices:none initialPw:nil archiveName:a.lastPathComponent usedPassword:NULL];
 	unsigned long long files = 0, folders = 0, size = 0, packed = 0;
 	for (const NZEntry& e : eng.entries()) { if (e.isDir) folders++; else { files++; size += e.size; packed += e.packSize; } }
 	NSString* msg = [NSString stringWithFormat:
@@ -819,10 +912,6 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	}
 	[NextZipDialogs showInfoTitle:@"Checksum information" text:msg];
 }
-- (void)fsOpenArchiveMenu:(id)s {
-	NSString* a = [self singleFsSelection];
-	if (a) [self openArchiveAtPath:a quiet:NO];
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BOTTOM-PANE extras: open-in-editor / delete-from-archive (menu)
@@ -888,7 +977,6 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	NSString* nameNoExt = [[first lastPathComponent] stringByDeletingPathExtension];
 
 	if (singleArchive) {
-		[self addItem:menu title:@"Open archive" action:@selector(fsOpenArchiveMenu:)];
 		[self addItem:menu title:@"Extract files…" action:@selector(fsExtract:)];
 		[self addItem:menu title:@"Extract Here" action:@selector(fsExtractHere:)];
 		[self addItem:menu title:[NSString stringWithFormat:@"Extract to \"%@/\"", nameNoExt] action:@selector(fsExtractToSub:)];
@@ -943,17 +1031,26 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	NSOpenPanel* p = [NSOpenPanel openPanel];
 	p.canChooseFiles = NO; p.canChooseDirectories = YES; p.prompt = @"Extract Here";
 	if ([p runModal] != NSModalResponseOK || !p.URL) return;
-	if (_engine->extract(idx, p.URL.path.UTF8String))
+	NSString* usedPw = nil;
+	if ([self extractWithEngine:_engine.get() indices:idx to:p.URL.path initialPw:_archivePassword
+	                    flatten:NO overwrite:0 eliminateRoot:NO archiveName:_archivePath.lastPathComponent
+	               usedPassword:&usedPw]) {
+		_archivePassword = usedPw;
 		[self alert:@"Extraction complete" info:[NSString stringWithFormat:@"Extracted to:\n%@", p.URL.path]];
-	else
-		[self alert:@"Extraction failed" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
+	}
 }
 
 - (void)actTest:(id)s {
 	if (!_root) return;
 	std::vector<uint32_t> idx = [self selectedIndices];
-	if (_engine->test(idx))
+	NSString* usedPw = nil;
+	if ([self testWithEngine:_engine.get() indices:idx initialPw:_archivePassword
+	             archiveName:_archivePath.lastPathComponent usedPassword:&usedPw]) {
+		_archivePassword = usedPw;
 		[self alert:@"Test passed" info:@"No errors detected (CRCs OK)."];
+	}
+	else if (_engine->lastErrorNeedsPassword())
+		return;   // user cancelled the password prompt — no nag
 	else
 		[self alert:@"Test failed" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
 }

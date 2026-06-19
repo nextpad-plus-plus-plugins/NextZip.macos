@@ -48,4 +48,8 @@
 + (nullable NZExtractOptions*)runExtractForArchive:(nonnull NSString*)archivePath;
 // A simple scrollable monospaced info window with an OK button (checksums, test result).
 + (void)showInfoTitle:(nonnull NSString*)title text:(nonnull NSString*)text;
+// Modal "Enter password" prompt (NSSecureTextField + Show Password). Returns the
+// entered password (possibly empty), or nil if the user cancelled. `archiveName`
+// is shown in the prompt; pass `wrong:YES` on a retry to show the bad-password hint.
++ (nullable NSString*)promptPasswordForArchive:(nullable NSString*)archiveName wrong:(BOOL)wrong;
 @end
