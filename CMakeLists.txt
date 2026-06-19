@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(NextZip LANGUAGES C CXX OBJCXX)
+project(NextZip VERSION 1.0.0 LANGUAGES C CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,7 +32,9 @@ set(PLUGIN_SOURCES
   src/NextZipDialogs.mm
 )
 
-add_library(NextZip MODULE ${SDK_SOURCES} ${PLUGIN_SOURCES})
+# SHARED (MH_DYLIB), not MODULE (MH_BUNDLE): only a dylib carries a Mach-O
+# current_version, which Plugins Admin reads to show the installed version.
+add_library(NextZip SHARED ${SDK_SOURCES} ${PLUGIN_SOURCES})
 
 target_include_directories(NextZip PRIVATE
   ${SZ}/CPP ${SZ} ${CMAKE_SOURCE_DIR}/deps/npp ${CMAKE_SOURCE_DIR}/src)
@@ -45,6 +47,8 @@ set_source_files_properties(src/NextZipPlugin.mm src/NextZipController.mm src/Ne
 
 set_target_properties(NextZip PROPERTIES PREFIX "" SUFFIX ".dylib" OUTPUT_NAME "NextZip")
 target_link_libraries(NextZip "-framework Cocoa" "-ldl")
+# Stamp the version into the dylib's Mach-O current_version (Plugins Admin reads it).
+target_link_options(NextZip PRIVATE "-Wl,-current_version,${PROJECT_VERSION}")
 
 # ── install: the plugin dylib + the vendored universal 7z.so engine ──────────
 set(PLUGIN_INSTALL_DIR "$ENV{HOME}/.nextpad++/plugins/NextZip")

@@ -12,4 +12,7 @@ deps/7z.so
 # internal design notes / investigation (local-only)
 /docs/
 
+# local scratch (icon experiments etc.)
+/tmp/
+
 .DS_Store
