@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox OFF: NextZip extracts archives to user-chosen locations and
+         dlopen()s the bundled 7z.so engine. Notarization works fine without
+         sandboxing for Developer-ID distribution; sandbox is only required for
+         the Mac App Store. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- The engine is the vendored 7z.so, loaded via dlopen. Allowing
+         library validation to be relaxed keeps it loadable even when its
+         signature differs from the app's (e.g. ad-hoc dev builds). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Read/write the archives and extract destinations the user picks. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+</dict>
+</plist>

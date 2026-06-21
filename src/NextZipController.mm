@@ -11,7 +11,6 @@
 #import <Cocoa/Cocoa.h>
 #include "NextZipController.h"
 #include "NextZipDialogs.h"
-#include "NppPluginInterfaceMac.h"
 #include "SevenZipEngine.h"
 #include <memory>
 #include <vector>
@@ -22,7 +21,9 @@
 #include <map>
 #include <utility>
 
-extern "C" NppData* NextZip_HostData();
+// This file is host-agnostic: it never references NppData / NPPM_* directly.
+// Everything host-specific goes through self.host (id<NextZipHost>), so the same
+// controller links into both the Nextpad++ plugin and the standalone app.
 
 // ── virtual folder tree built from the flat entry list ───────────────────────
 namespace {
@@ -155,7 +156,6 @@ BOOL looksLikeArchive(NSString* path) {
 @end
 
 @implementation NextZipController {
-	const NppData*                 _npp;
 	std::unique_ptr<NextZipEngine> _engine;
 	FMNode*                        _root;
 	FMNode*                        _cwd;
@@ -164,9 +164,7 @@ BOOL looksLikeArchive(NSString* path) {
 	NSString*                      _archivePassword; // password that unlocked the on-screen archive (session cache)
 	NSString*                      _displayPath;   // outermost real file the user clicked (for the breadcrumb)
 	ArcChain                       _layers;        // outer→inner nested-archive chain for the current view
-	NSView*                        _panelView;     // dock-panel content (registered with the host)
-	void*                          _panelHandle;   // NPPM_DMM_REGISTERPANEL handle
-	BOOL                           _panelVisible;
+	NSView*                        _panelView;     // the archive-manager content view (shared by both shells)
 	NSTableView*                   _table;
 	NSPathControl*                 _breadcrumb;
 	NSOutlineView*                 _fsOutline;       // top pane: filesystem browser
@@ -178,27 +176,71 @@ BOOL looksLikeArchive(NSString* path) {
 	std::map<std::string, OpenedTemp> _openedTemps;
 }
 
-static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
-	NppData* d = NextZip_HostData();
-	return d ? d->_sendMessage(d->_nppHandle, msg, w, l) : 0;
-}
-
-- (instancetype)initWithNpp:(const NppData*)npp {
-	if ((self = [super init])) { _npp = npp; _engine.reset(new NextZipEngine()); _root = _cwd = nullptr; }
+- (instancetype)init {
+	if ((self = [super init])) { _engine.reset(new NextZipEngine()); _root = _cwd = nullptr; }
 	return self;
 }
 - (void)dealloc { freeTree(_root); }
 
+- (void)setEnginePath:(NSString*)sevenZipSoPath {
+	if (sevenZipSoPath.length && _engine) _engine->setEnginePath(sevenZipSoPath.UTF8String);
+}
+
 // ── window + toolbar ─────────────────────────────────────────────────────────
-- (NSButton*)toolButton:(NSString*)tip symbol:(NSString*)sym action:(SEL)a {
+// One toolbar item. In the standalone app on macOS 26+, each icon is its OWN
+// Tahoe Liquid Glass capsule (NSGlassEffectView); the plugin and older macOS get
+// a plain textured button, so this is purely additive to the app.
+- (NSView*)toolButton:(NSString*)tip symbol:(NSString*)sym action:(SEL)a {
 	NSButton* b = [NSButton buttonWithTitle:@"" target:self action:a];
 	NSImage* img = [NSImage imageWithSystemSymbolName:sym accessibilityDescription:tip];
 	if (img) { b.image = img; b.imagePosition = NSImageOnly; }
 	else     { b.title = tip; b.font = [NSFont systemFontOfSize:10]; }
-	b.bezelStyle = NSBezelStyleTexturedRounded; b.toolTip = tip;
+	b.toolTip = tip;
 	b.translatesAutoresizingMaskIntoConstraints = NO;
+
+	if (_usesGlassToolbars) {
+		if (@available(macOS 26.0, *)) {
+			// Borderless symbol centered in its own glass pill (the capsule is the chrome).
+			b.bordered = NO; b.bezelStyle = NSBezelStyleRegularSquare;
+			b.contentTintColor = [NSColor labelColor];
+			[b.widthAnchor  constraintEqualToConstant:34].active = YES;
+			[b.heightAnchor constraintEqualToConstant:28].active = YES;
+			NSGlassEffectView* g = [[NSGlassEffectView alloc] init];
+			g.translatesAutoresizingMaskIntoConstraints = NO;
+			g.cornerRadius = 14;                 // half the height → capsule
+			g.contentView = b;
+			[g.widthAnchor  constraintEqualToConstant:34].active = YES;
+			[g.heightAnchor constraintEqualToConstant:28].active = YES;
+			// Hover feedback: subtle grey tint on the capsule. Tracking-area owner
+			// is the controller; the capsule rides along in userInfo (nonretained
+			// to avoid a view→area→userInfo→view retain cycle).
+			NSTrackingArea* ta = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+				options:(NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect)
+				owner:self userInfo:@{ @"nzGlass": [NSValue valueWithNonretainedObject:g] }];
+			[g addTrackingArea:ta];
+			return g;
+		}
+	}
+	b.bezelStyle = NSBezelStyleTexturedRounded;
 	[b.widthAnchor constraintEqualToConstant:38].active = YES;
 	return b;
+}
+
+// Hover feedback for the Liquid Glass toolbar capsules (app only; the controller
+// is the tracking-area owner, each event identifies its capsule via userInfo).
+- (void)mouseEntered:(NSEvent*)event {
+	if (@available(macOS 26.0, *)) {
+		id g = [event.trackingArea.userInfo[@"nzGlass"] nonretainedObjectValue];
+		if ([g isKindOfClass:[NSGlassEffectView class]])
+			((NSGlassEffectView*)g).tintColor = [[NSColor systemGrayColor] colorWithAlphaComponent:0.22];
+	}
+}
+- (void)mouseExited:(NSEvent*)event {
+	if (@available(macOS 26.0, *)) {
+		id g = [event.trackingArea.userInfo[@"nzGlass"] nonretainedObjectValue];
+		if ([g isKindOfClass:[NSGlassEffectView class]])
+			((NSGlassEffectView*)g).tintColor = nil;
+	}
 }
 
 - (void)ensurePanel {
@@ -318,21 +360,15 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	[v layoutSubtreeIfNeeded];
 	[split setPosition:200 ofDividerAtIndex:0];   // ~200px filesystem pane on top
 	[_fsOutline reloadData];
-
-	// Register as a dockable panel (like AnalysePlugin/NppFTP); host strong-retains the view.
-	_panelHandle = (void*)hostMsg(NPPM_DMM_REGISTERPANEL, (uintptr_t)v, (intptr_t)"NextZip");
+	// NOTE: panel hosting (dock-register for the plugin, window contentView for
+	// the app) is the shell's job — this method only builds the view.
 }
 
-- (void)show {
-	[self ensurePanel];
-	if (_panelHandle) hostMsg(NPPM_DMM_SHOWPANEL, (uintptr_t)_panelHandle, 0);
-	_panelVisible = YES;
-}
-- (void)togglePanel {
-	[self ensurePanel];
-	_panelVisible = !_panelVisible;
-	if (_panelHandle) hostMsg(_panelVisible ? NPPM_DMM_SHOWPANEL : NPPM_DMM_HIDEPANEL, (uintptr_t)_panelHandle, 0);
-}
+// The shared archive-manager view. Built lazily; the shell hosts it.
+- (NSView*)panelView { [self ensurePanel]; return _panelView; }
+
+// Outermost real archive on screen (the app uses this for the window title).
+- (NSString*)currentArchivePath { return _displayPath; }
 
 // ── open ──────────────────────────────────────────────────────────────────────
 - (void)showOpenPanel {
@@ -341,11 +377,9 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	if ([p runModal] == NSModalResponseOK && p.URL) [self openArchiveAtPath:p.URL.path];
 }
 - (void)openCurrentEditorFile {
-	char path[4096]; path[0] = 0;
-	NppData* d = NextZip_HostData();
-	if (d) d->_sendMessage(d->_nppHandle, NPPM_GETFULLCURRENTPATH, sizeof(path), (intptr_t)path);
-	if (path[0]) [self openArchiveAtPath:[NSString stringWithUTF8String:path]];
-	else         [self showOpenPanel];
+	NSString* p = [self.host nextZipCurrentFilePath];
+	if (p.length) [self openArchiveAtPath:p];
+	else          [self showOpenPanel];
 }
 
 - (void)openArchiveAtPath:(NSString*)path { [self openArchiveAtPath:path quiet:NO]; }
@@ -385,7 +419,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	freeTree(_root);
 	_root = buildTree(_engine->entries());
 	[self navigateTo:_root];
-	[self show];
+	[self.host nextZipRevealPanel];
 }
 
 // A fresh unique temp dir for one unwrapped layer (kept for the session so
@@ -648,8 +682,7 @@ static intptr_t hostMsg(uint32_t msg, uintptr_t w, intptr_t l) {
 	OpenedTemp ot{ _engine->entries()[n->entryIndex].path, _layers };
 	auto res = _openedTemps.insert_or_assign(std::string(full.UTF8String), std::move(ot));
 	const char* stablePath = res.first->first.c_str();
-	NppData* d = NextZip_HostData();
-	if (d) d->_sendMessage(d->_nppHandle, NPPM_DOOPEN, 0, (intptr_t)stablePath);
+	[self.host nextZipOpenExtractedFile:full stablePath:stablePath];
 }
 
 // ── save-back: editor saved a file we extracted → write it into the archive ──
