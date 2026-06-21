@@ -152,7 +152,7 @@ BOOL looksLikeArchive(NSString* path) {
 // ─────────────────────────────────────────────────────────────────────────────
 @interface NextZipController () <NSTableViewDataSource, NSTableViewDelegate,
                                 NSOutlineViewDataSource, NSOutlineViewDelegate,
-                                NSMenuDelegate, NSWindowDelegate>
+                                NSMenuDelegate, NSWindowDelegate, NSSearchFieldDelegate>
 @end
 
 @implementation NextZipController {
@@ -166,6 +166,9 @@ BOOL looksLikeArchive(NSString* path) {
 	ArcChain                       _layers;        // outer→inner nested-archive chain for the current view
 	NSView*                        _panelView;     // the archive-manager content view (shared by both shells)
 	NSTableView*                   _table;
+	std::vector<FMNode*>           _visibleRows;   // _cwd->children after the name filter (what the table shows)
+	NSString*                      _arcFilter;     // current archive-pane name filter ("" = show all)
+	NSSearchField*                 _searchField;   // archive-pane name filter (app only); nil in the plugin
 	NSPathControl*                 _breadcrumb;
 	NSOutlineView*                 _fsOutline;       // top pane: filesystem browser
 	NSArray<NSURL*>*               _fsRoots;
@@ -311,6 +314,16 @@ BOOL looksLikeArchive(NSString* path) {
 	tb.spacing = 6; tb.translatesAutoresizingMaskIntoConstraints = NO;
 	[arc addSubview:tb];
 
+	// App only: a live name filter to the right of the archive toolbar.
+	if (_sideBySidePanes) {
+		_searchField = [[NSSearchField alloc] init];
+		_searchField.translatesAutoresizingMaskIntoConstraints = NO;
+		_searchField.placeholderString = @"Filter";
+		_searchField.sendsWholeSearchString = NO;
+		_searchField.delegate = self;             // live filter via -controlTextDidChange:
+		[arc addSubview:_searchField];
+	}
+
 	NSScrollView* sc = [[NSScrollView alloc] initWithFrame:NSZeroRect];
 	sc.translatesAutoresizingMaskIntoConstraints = NO;
 	sc.hasVerticalScroller = YES; sc.hasHorizontalScroller = YES;
@@ -346,7 +359,14 @@ BOOL looksLikeArchive(NSString* path) {
 			[tb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:6],
 			[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:6],
 			[sc.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
+			// Filter field: right-aligned, vertically centered on the toolbar row.
+			[_searchField.centerYAnchor constraintEqualToAnchor:tb.centerYAnchor],
+			[_searchField.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor constant:-8],
+			[_searchField.leadingAnchor constraintGreaterThanOrEqualToAnchor:tb.trailingAnchor constant:12],
 		]];
+		NSLayoutConstraint* sw = [_searchField.widthAnchor constraintEqualToConstant:200];
+		sw.priority = NSLayoutPriorityDefaultHigh;   // prefer 200pt; shrink in a narrow pane
+		[arcCons addObject:sw];
 	} else {
 		// Plugin: breadcrumb on top, then toolbar, then the table.
 		[arcCons addObjectsFromArray:@[
@@ -458,6 +478,10 @@ BOOL looksLikeArchive(NSString* path) {
 - (void)navigateTo:(FMNode*)node {
 	if (!node) return;
 	_cwd = node;
+	// Changing folders starts unfiltered (so you see the whole folder you entered).
+	_arcFilter = @"";
+	_searchField.stringValue = @"";
+	[self rebuildVisibleRows];
 	// build ancestor chain root..cwd
 	_ancestors.clear();
 	for (FMNode* n = node; n; n = n->parent) _ancestors.insert(_ancestors.begin(), n);
@@ -491,11 +515,34 @@ BOOL looksLikeArchive(NSString* path) {
 - (void)actUp:(id)s { if (_cwd && _cwd->parent) [self navigateTo:_cwd->parent]; }
 
 // ── table ───────────────────────────────────────────────────────────────────────
-- (FMNode*)nodeAtRow:(NSInteger)row {
-	if (!_cwd || row < 0 || (size_t)row >= _cwd->children.size()) return nullptr;
-	return _cwd->children[(size_t)row];
+// Recompute the rows the table shows = the current folder's children passing the
+// name filter (case-insensitive substring). Empty filter → all children, so the
+// plugin (which never shows the search field) behaves exactly as before.
+- (void)rebuildVisibleRows {
+	_visibleRows.clear();
+	if (!_cwd) return;
+	NSString* f = _arcFilter ?: @"";
+	if (f.length == 0) { _visibleRows = _cwd->children; return; }
+	for (FMNode* c : _cwd->children) {
+		NSString* name = [NSString stringWithUTF8String:c->name.c_str()];
+		if (name && [name rangeOfString:f options:NSCaseInsensitiveSearch].location != NSNotFound)
+			_visibleRows.push_back(c);
+	}
 }
-- (NSInteger)numberOfRowsInTableView:(NSTableView*)t { return _cwd ? (NSInteger)_cwd->children.size() : 0; }
+- (FMNode*)nodeAtRow:(NSInteger)row {
+	if (row < 0 || (size_t)row >= _visibleRows.size()) return nullptr;
+	return _visibleRows[(size_t)row];
+}
+- (NSInteger)numberOfRowsInTableView:(NSTableView*)t { return (NSInteger)_visibleRows.size(); }
+
+// Live archive-pane name filter (app only). Fires on every keystroke and on the
+// search field's clear button.
+- (void)controlTextDidChange:(NSNotification*)note {
+	if (note.object != _searchField) return;
+	_arcFilter = [(_searchField.stringValue ?: @"") copy];
+	[self rebuildVisibleRows];
+	[_table reloadData];
+}
 
 - (NSView*)tableView:(NSTableView*)tv viewForTableColumn:(NSTableColumn*)col row:(NSInteger)row {
 	FMNode* n = [self nodeAtRow:row];
