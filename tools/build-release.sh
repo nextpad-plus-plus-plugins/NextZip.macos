@@ -103,6 +103,21 @@ if [ -z "$NO_ICON" ]; then
 fi
 [ -f "$PROJECT_DIR/resources/nzip.icns" ] || warn "resources/nzip.icns missing — ≤Sequoia icon will be blank."
 
+# ── 0b. Regenerate the DMG background (lavender drop zone + down arrow) ───────
+#
+# The Python generator owns the canonical icon-position constants; the
+# AppleScript in step 3 mirrors them. Regenerating every run means nobody ships
+# a stale background. Needs Pillow; if missing, fall back to the committed
+# resources/dmg-background.tiff (or a plain layout if there isn't one).
+
+if python3 -c "import PIL" >/dev/null 2>&1; then
+    log "Regenerating DMG background (tools/generate-dmg-background.py)"
+    /usr/bin/env python3 "$PROJECT_DIR/tools/generate-dmg-background.py" >/dev/null \
+        || warn "DMG background generation failed — using committed dmg-background.tiff if present"
+else
+    warn "Pillow not installed — using committed resources/dmg-background.tiff if present."
+fi
+
 # ── 1. Build (Release, universal arm64+x86_64) ───────────────────────────────
 
 log "Building $APP_NAME.app (Release, arm64+x86_64) → $BUILD_DIR"
@@ -161,12 +176,11 @@ DMG_RESTAGE="/tmp/nextzip_dmg_restage_$$"
 
 hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
 
+# The background TIFF is bundled at build time (CMake) and sealed by the step-2
+# signature — reference it in place; never copy into the signed bundle (that
+# would invalidate the signature).
 HAVE_BG=""
-if [ -f "$PROJECT_DIR/resources/dmg-background.tiff" ]; then
-    cp -f "$PROJECT_DIR/resources/dmg-background.tiff" \
-          "$APP_BUNDLE/Contents/Resources/dmg-background.tiff"
-    HAVE_BG=1
-fi
+[ -f "$APP_BUNDLE/Contents/Resources/dmg-background.tiff" ] && HAVE_BG=1
 
 rm -rf "$DMG_STAGE" && mkdir -p "$DMG_STAGE"
 cp -R "$APP_BUNDLE" "$DMG_STAGE/"
@@ -209,17 +223,19 @@ tell application "Finder"
             set statusbar visible to false
             set pathbar visible to false
             set sidebar width to 0
-            set the bounds to {200, 120, 800, 560}
+            set the bounds to {200, 120, 800, 800}
         end tell
         set theViewOptions to the icon view options of container window
         tell theViewOptions
             set arrangement to not arranged
             set icon size to 128
-            set text size to 13
+            set text size to 14
         end tell
         ${BG_LINE}
-        set position of item "${APP_NAME}.app" of container window to {150, 200}
-        set position of item "Applications" of container window to {450, 200}
+        -- Vertical layout (must match tools/generate-dmg-background.py):
+        -- app icon centered near the top, Applications centered in the drop zone.
+        set position of item "${APP_NAME}.app" of container window to {300, 130}
+        set position of item "Applications" of container window to {300, 474}
         update without registering applications
         delay 2
         close

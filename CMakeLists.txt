@@ -93,6 +93,7 @@ if(NEXTZIP_BUILD_APP)
   foreach(R
       "${CMAKE_SOURCE_DIR}/resources/nzip.icns"
       "${CMAKE_SOURCE_DIR}/resources/Assets.car"
+      "${CMAKE_SOURCE_DIR}/resources/dmg-background.tiff"
       "${CMAKE_SOURCE_DIR}/deps/7z.so"
       "${SZ}/DOC/License.txt"
       "${SZ}/DOC/unRarLicense.txt")
