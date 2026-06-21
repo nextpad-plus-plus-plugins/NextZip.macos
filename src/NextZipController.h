@@ -22,6 +22,12 @@
 // called (the toolbar is built once and cached).
 @property (nonatomic) BOOL usesGlassToolbars;
 
+// When YES, the two panes sit side by side (filesystem browser on the LEFT,
+// archive viewer on the RIGHT — Finder-like) instead of stacked (browser on top,
+// archive below). The standalone app sets this; the plugin's dock panel stays
+// stacked. Must be set before -panelView is first called.
+@property (nonatomic) BOOL sideBySidePanes;
+
 // The archive-manager view (filesystem browser on top, archive contents
 // below). Built lazily on first access. The plugin registers it as a dock
 // panel; the app puts it in a window's contentView.

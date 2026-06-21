@@ -39,6 +39,7 @@ static NSString* bundledSevenZipSo(void) {
 		_controller = [[NextZipController alloc] init];
 		_controller.host = self;
 		_controller.usesGlassToolbars = YES;   // Tahoe Liquid Glass pills (app-only, macOS 26+)
+		_controller.sideBySidePanes  = YES;    // Finder-like: FS left, archive right (app-only)
 		NSString* so = bundledSevenZipSo();
 		if (so.length) [_controller setEnginePath:so];
 

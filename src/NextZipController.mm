@@ -330,26 +330,42 @@ BOOL looksLikeArchive(NSString* path) {
 	_arcMenu = [[NSMenu alloc] initWithTitle:@"arc"]; _arcMenu.delegate = self; _table.menu = _arcMenu;
 	sc.documentView = _table;
 	[arc addSubview:sc];
-	[NSLayoutConstraint activateConstraints:@[
-		[_breadcrumb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:5],
+	// Orientation-independent constraints for the archive pane.
+	NSMutableArray<NSLayoutConstraint*>* arcCons = [@[
 		[_breadcrumb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
 		[_breadcrumb.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor constant:-8],
 		[_breadcrumb.heightAnchor constraintEqualToConstant:16],
-		[tb.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
 		[tb.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor constant:8],
-		[sc.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:4],
 		[sc.leadingAnchor constraintEqualToAnchor:arc.leadingAnchor],
 		[sc.trailingAnchor constraintEqualToAnchor:arc.trailingAnchor],
 		[sc.bottomAnchor constraintEqualToAnchor:arc.bottomAnchor],
-	]];
+	] mutableCopy];
+	if (_sideBySidePanes) {
+		// App: toolbar on top, breadcrumb beneath it, then the table.
+		[arcCons addObjectsFromArray:@[
+			[tb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:6],
+			[_breadcrumb.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:6],
+			[sc.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
+		]];
+	} else {
+		// Plugin: breadcrumb on top, then toolbar, then the table.
+		[arcCons addObjectsFromArray:@[
+			[_breadcrumb.topAnchor constraintEqualToAnchor:arc.topAnchor constant:5],
+			[tb.topAnchor constraintEqualToAnchor:_breadcrumb.bottomAnchor constant:4],
+			[sc.topAnchor constraintEqualToAnchor:tb.bottomAnchor constant:4],
+		]];
+	}
+	[NSLayoutConstraint activateConstraints:arcCons];
 
-	// ── split the panel vertically: FS browser on top, archive below ──
+	// Split the two panes. Default (plugin): stacked — FS browser on top, archive
+	// below. Standalone app (sideBySidePanes): Finder-like — FS browser on the
+	// LEFT, archive viewer on the RIGHT. Each pane keeps its own toolbar at its top.
 	NSSplitView* split = [[NSSplitView alloc] initWithFrame:v.bounds];
 	split.translatesAutoresizingMaskIntoConstraints = NO;
-	split.vertical = NO;                 // horizontal divider → stacked vertically
+	split.vertical = _sideBySidePanes;   // YES → vertical divider → panes side by side
 	split.dividerStyle = NSSplitViewDividerStyleThin;
-	[split addArrangedSubview:top];
-	[split addArrangedSubview:arc];
+	[split addArrangedSubview:top];      // first  = top (stacked) / left  (side-by-side)
+	[split addArrangedSubview:arc];      // second = bottom (stacked) / right (side-by-side)
 	[v addSubview:split];
 	[NSLayoutConstraint activateConstraints:@[
 		[split.topAnchor constraintEqualToAnchor:v.topAnchor],
@@ -358,7 +374,13 @@ BOOL looksLikeArchive(NSString* path) {
 		[split.bottomAnchor constraintEqualToAnchor:v.bottomAnchor],
 	]];
 	[v layoutSubtreeIfNeeded];
-	[split setPosition:200 ofDividerAtIndex:0];   // ~200px filesystem pane on top
+	if (_sideBySidePanes) {
+		[split setPosition:300 ofDividerAtIndex:0];   // ~300px FS pane on the left
+		// Keep the FS pane's width when the window resizes; the archive viewer grows.
+		[split setHoldingPriority:NSLayoutPriorityDefaultLow + 1 forSubviewAtIndex:0];
+	} else {
+		[split setPosition:200 ofDividerAtIndex:0];   // ~200px FS pane on top
+	}
 	[_fsOutline reloadData];
 	// NOTE: panel hosting (dock-register for the plugin, window contentView for
 	// the app) is the shell's job — this method only builds the view.
