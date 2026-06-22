@@ -253,12 +253,20 @@ rm -rf "$DMG_RESTAGE" && mkdir -p "$DMG_RESTAGE"
 hdiutil detach "$DEVICE" >/dev/null 2>&1 || hdiutil detach "$DEVICE" -force >/dev/null 2>&1
 
 # Final compress: ULMO (lzma). Mounts on macOS 10.15+ (our min is 11.0).
+# `hdiutil create` lays the image out; a follow-up `hdiutil convert` at
+# lzma-level=9 re-packs the LZMA bands noticeably tighter (~4% smaller here —
+# the level flag on `create` itself is a no-op). The convert preserves the
+# .DS_Store layout, the Applications symlink, and chflags.
+DMG_PRE="/tmp/nextzip_dmg_pre_$$.dmg"
+rm -f "$DMG_PRE"
 hdiutil create \
     -volname "$VOLUME_NAME" \
     -srcfolder "$DMG_RESTAGE" \
     -ov \
     -format ULMO \
-    "$DMG_OUT" >/dev/null
+    "$DMG_PRE" >/dev/null
+hdiutil convert "$DMG_PRE" -format ULMO -imagekey lzma-level=9 -ov -o "$DMG_OUT" >/dev/null
+rm -f "$DMG_PRE"
 
 rm -f "$DMG_TMP"
 rm -rf "$DMG_STAGE" "$DMG_RESTAGE"
