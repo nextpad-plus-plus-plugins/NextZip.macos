@@ -4,7 +4,7 @@ build-*/
 
 # release artifacts (DMG ships via GitHub release, not committed)
 /downloads/
-
+resources/
 # 7-Zip source + engine: fetched & built by deps/build-7z-engine.sh, not vendored
 deps/7zip/
 deps/7z.so
