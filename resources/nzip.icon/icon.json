@@ -63,8 +63,8 @@
           "position" : {
             "scale" : 1.2,
             "translation-in-points" : [
-              -219.55702775999998,
-              -9.593384260000107
+              -192.90297413520017,
+              -15.069236111999885
             ]
           }
         },
@@ -86,39 +86,13 @@
             {
               "appearance" : "light",
               "value" : {
-                "linear-gradient" : [
-                  "display-p3:0.45586,0.28538,0.70046,1.00000",
-                  "srgb:0.32370,0.10636,0.57486,1.00000"
-                ],
-                "orientation" : {
-                  "start" : {
-                    "x" : 0.5,
-                    "y" : 0
-                  },
-                  "stop" : {
-                    "x" : 0.5,
-                    "y" : 0.7
-                  }
-                }
+                "solid" : "extended-gray:0.25000,1.00000"
               }
             },
             {
               "appearance" : "dark",
               "value" : {
-                "linear-gradient" : [
-                  "srgb:0.00000,0.97680,0.00000,1.00000",
-                  "extended-gray:1.00000,1.00000"
-                ],
-                "orientation" : {
-                  "start" : {
-                    "x" : 0.5,
-                    "y" : 1
-                  },
-                  "stop" : {
-                    "x" : 0.5,
-                    "y" : 0.3
-                  }
-                }
+                "solid" : "extended-gray:1.00000,1.00000"
               }
             }
           ],
@@ -128,85 +102,18 @@
           "name" : "sq02",
           "opacity-specializations" : [
             {
-              "value" : 0.7
+              "value" : 1
             },
             {
               "appearance" : "light",
-              "value" : 0.44
-            }
-          ],
-          "position" : {
-            "scale" : 2.8,
-            "translation-in-points" : [
-              -220.26320909887693,
-              -3.2269699707532027
-            ]
-          }
-        },
-        {
-          "blend-mode-specializations" : [
-            {
-              "value" : "plus-darker"
-            },
-            {
-              "appearance" : "dark",
-              "value" : "normal"
-            }
-          ],
-          "fill-specializations" : [
-            {
-              "value" : {
-                "linear-gradient" : [
-                  "display-p3:0.19934,0.45972,0.28320,1.00000",
-                  "srgb:0.00000,0.97680,0.00000,1.00000"
-                ],
-                "orientation" : {
-                  "start" : {
-                    "x" : 0.2763268107253389,
-                    "y" : 0.0894291315257253
-                  },
-                  "stop" : {
-                    "x" : 0.5,
-                    "y" : 0.7
-                  }
-                }
-              }
-            },
-            {
-              "appearance" : "dark",
-              "value" : {
-                "linear-gradient" : [
-                  "srgb:0.00000,0.97680,0.00000,1.00000",
-                  "display-p3:0.19934,0.45972,0.28320,1.00000"
-                ],
-                "orientation" : {
-                  "start" : {
-                    "x" : 0.2763268107253389,
-                    "y" : 0.0894291315257253
-                  },
-                  "stop" : {
-                    "x" : 0.5,
-                    "y" : 0.7
-                  }
-                }
-              }
-            }
-          ],
-          "glass" : false,
-          "hidden" : true,
-          "image-name" : "sq01.svg",
-          "name" : "sq01",
-          "opacity-specializations" : [
-            {
-              "appearance" : "dark",
-              "value" : 0
+              "value" : 1
             }
           ],
           "position" : {
             "scale" : 2.6,
             "translation-in-points" : [
-              -219.86645099584848,
-              -2.125962484649108
+              -194.46862766365007,
+              3.9308332281912044
             ]
           }
         },
@@ -259,8 +166,8 @@
           "position" : {
             "scale" : 1.2,
             "translation-in-points" : [
-              -219.13625000000002,
-              -2.3356875000000628
+              -192.04372600816777,
+              -0.24000000000012278
             ]
           }
         },
@@ -373,6 +280,121 @@
           }
         },
         {
+          "blend-mode-specializations" : [
+            {
+              "value" : "normal"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "normal"
+            }
+          ],
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.00000,0.97680,0.00000,1.00000",
+                  "display-p3:0.19934,0.45972,0.28320,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.2763268107253389,
+                    "y" : 0.0894291315257253
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0.7
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.00000,0.97680,0.00000,1.00000",
+                  "display-p3:0.19934,0.45972,0.28320,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.2763268107253389,
+                    "y" : 0.0894291315257253
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0.7
+                  }
+                }
+              }
+            }
+          ],
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "sq01.svg",
+          "name" : "sq01",
+          "opacity-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : 1
+            }
+          ],
+          "position" : {
+            "scale" : 2.8,
+            "translation-in-points" : [
+              -192.95562716999103,
+              -5.887989807719464
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "solid" : "extended-srgb:0.20392,0.78039,0.34902,1.00000"
+          },
+          "glass-specializations" : [
+            {
+              "value" : false
+            },
+            {
+              "appearance" : "dark",
+              "value" : false
+            }
+          ],
+          "hidden" : true,
+          "image-name" : "pr_bottom.svg",
+          "name" : "pr_bottom",
+          "position" : {
+            "scale" : 1.6,
+            "translation-in-points" : [
+              10.846717429898149,
+              203.04000000000008
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "automatic-gradient" : "extended-srgb:0.20392,0.78039,0.34902,1.00000"
+          },
+          "glass-specializations" : [
+            {
+              "value" : false
+            },
+            {
+              "appearance" : "dark",
+              "value" : false
+            }
+          ],
+          "hidden" : true,
+          "image-name" : "pr_top.svg",
+          "name" : "pr_top",
+          "position" : {
+            "scale" : 1.6,
+            "translation-in-points" : [
+              9.726717429897917,
+              -128.6400000000001
+            ]
+          }
+        },
+        {
           "blend-mode" : "darken",
           "fill-specializations" : [
             {
@@ -412,24 +434,37 @@
           "fill-specializations" : [
             {
               "value" : {
-                "automatic-gradient" : "srgb:0.55634,0.97935,0.00000,1.00000"
+                "linear-gradient" : [
+                  "extended-gray:0.25000,1.00000",
+                  "srgb:0.55634,0.97935,0.00000,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.053460342378501564,
+                    "y" : 0.49999999999999956
+                  },
+                  "stop" : {
+                    "x" : 0.34078023446236855,
+                    "y" : 0.5
+                  }
+                }
               }
             },
             {
               "appearance" : "light",
               "value" : {
                 "linear-gradient" : [
-                  "display-p3:0.45586,0.28538,0.70046,1.00000",
-                  "srgb:0.32370,0.10636,0.57486,1.00000"
+                  "extended-gray:0.00000,1.00000",
+                  "extended-gray:0.25000,1.00000"
                 ],
                 "orientation" : {
                   "start" : {
-                    "x" : 0.5,
-                    "y" : 0
+                    "x" : 0,
+                    "y" : 0.5
                   },
                   "stop" : {
-                    "x" : 0.5,
-                    "y" : 0.7
+                    "x" : 0.42016200489305544,
+                    "y" : 0.5
                   }
                 }
               }
@@ -439,9 +474,9 @@
           "image-name" : "Image 5.png",
           "name" : "Image 5",
           "position" : {
-            "scale" : 1.6,
+            "scale" : 1.5,
             "translation-in-points" : [
-              258.9953125000002,
+              285.66231249999987,
               5.1200000000000045
             ]
           }
@@ -541,37 +576,6 @@
           "blend-mode" : "normal",
           "fill" : {
             "linear-gradient" : [
-              "srgb:0.15686,0.60967,0.25490,1.00000",
-              "srgb:0.00000,0.97680,0.00000,1.00000"
-            ],
-            "orientation" : {
-              "start" : {
-                "x" : 0.3251876543123811,
-                "y" : 0.16689054455423052
-              },
-              "stop" : {
-                "x" : 1.1605091563557355,
-                "y" : 0.13647714541914874
-              }
-            }
-          },
-          "glass" : false,
-          "hidden" : true,
-          "image-name" : "nbc.svg",
-          "name" : "nbc",
-          "opacity" : 1,
-          "position" : {
-            "scale" : 1.29,
-            "translation-in-points" : [
-              -143.2216875000002,
-              10.316000000000145
-            ]
-          }
-        },
-        {
-          "blend-mode" : "normal",
-          "fill" : {
-            "linear-gradient" : [
               "extended-srgb:0.15686,0.80392,0.25490,1.00000",
               "srgb:0.00000,0.58431,0.27059,1.00000"
             ],
@@ -609,8 +613,8 @@
           "position" : {
             "scale" : 1.3,
             "translation-in-points" : [
-              -121.06328257010125,
-              -23.799687500000005
+              -188.04625,
+              -9.620000000000061
             ]
           }
         },
@@ -682,6 +686,32 @@
         {
           "glass" : false,
           "hidden" : true,
+          "image-name" : "arrow_down.svg",
+          "name" : "arrow_down",
+          "position" : {
+            "scale" : 0.2,
+            "translation-in-points" : [
+              -253.2776875000004,
+              -423.05999999999995
+            ]
+          }
+        },
+        {
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "arrow_up.svg",
+          "name" : "arrow_up",
+          "position" : {
+            "scale" : 0.2,
+            "translation-in-points" : [
+              -158.99961222276727,
+              345.9999999999999
+            ]
+          }
+        },
+        {
+          "glass" : false,
+          "hidden" : true,
           "image-name" : "bgg2.svg",
           "name" : "bgg2",
           "opacity" : 1,
@@ -734,7 +764,7 @@
             }
           ],
           "glass" : false,
-          "hidden" : false,
+          "hidden" : true,
           "image-name" : "col.svg",
           "name" : "col",
           "position" : {
@@ -749,13 +779,130 @@
           "fill-specializations" : [
             {
               "value" : {
+                "linear-gradient" : [
+                  "extended-gray:0.00000,1.00000",
+                  "extended-gray:0.25000,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5,
+                    "y" : 0.8426295501176209
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0.393316695963802
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.07751,0.08215,0.07690,1.00000",
+                  "display-p3:0.65918,0.97119,0.30176,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.9063288103070176,
+                    "y" : 0.923224174954792
+                  },
+                  "stop" : {
+                    "x" : 0.7156078673245615,
+                    "y" : 0.09326966546112116
+                  }
+                }
+              }
+            }
+          ],
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "col.svg",
+          "name" : "col",
+          "position" : {
+            "scale" : 0.8,
+            "translation-in-points" : [
+              -175.33125,
+              -273.9000000000001
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "extended-gray:0.00000,1.00000",
+                  "extended-gray:0.25000,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5,
+                    "y" : 0
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0.84248269203822
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.55859,0.89307,0.17383,1.00000",
+                  "extended-gray:0.25000,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5,
+                    "y" : 1
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0
+                  }
+                }
+              }
+            }
+          ],
+          "glass" : false,
+          "hidden" : true,
+          "image-name" : "col.svg",
+          "name" : "col",
+          "position" : {
+            "scale" : 0.8,
+            "translation-in-points" : [
+              -175.33125,
+              325.8999999999998
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
                 "automatic-gradient" : "srgb:0.55634,0.97935,0.00000,1.00000"
               }
             },
             {
               "appearance" : "light",
               "value" : {
-                "automatic-gradient" : "srgb:0.32370,0.10636,0.57486,1.00000"
+                "linear-gradient" : [
+                  "extended-gray:0.00000,1.00000",
+                  "extended-gray:0.25000,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 1.073384678692246,
+                    "y" : 0.5
+                  },
+                  "stop" : {
+                    "x" : 0.6842088784984757,
+                    "y" : 0.5
+                  }
+                }
               }
             }
           ],
@@ -763,7 +910,7 @@
           "image-name" : "Image 5.png",
           "name" : "Image 5",
           "position" : {
-            "scale" : 1.6,
+            "scale" : 1.5,
             "translation-in-points" : [
               -729.55625,
               5.1200000000000045
