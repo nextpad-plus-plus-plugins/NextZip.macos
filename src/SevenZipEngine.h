@@ -98,6 +98,14 @@ public:
 	// rewriting it in place and re-opening. Writable formats only.
 	bool deleteEntries(const std::vector<uint32_t>& indices);
 
+	// Add filesystem paths (files and/or folders, recursed) into the CURRENTLY-OPEN
+	// archive, under the in-archive folder `destPrefix` ("" = root). Every existing
+	// entry is preserved; a new item whose archive path collides with an existing
+	// entry replaces it in place (no duplicate). Rewrites the archive and re-opens.
+	// Writable, multi-item formats only (7z/zip/tar/wim — not gzip/bzip2/xz/RAR).
+	bool addPaths(const std::vector<std::string>& inputs, const std::string& destPrefix,
+	              const std::string& password = std::string());
+
 	// Is the named format one NextZip can write/create? (7z/zip/tar/gz/bz2/xz/wim)
 	static bool isWritableFormat(const std::string& format);
 

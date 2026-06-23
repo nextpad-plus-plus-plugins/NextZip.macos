@@ -30,6 +30,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <set>
+#include <unordered_map>
 #include <CommonCrypto/CommonDigest.h>
 
 using namespace NWindows;
@@ -491,17 +492,21 @@ namespace {
 struct CompItem {
 	std::string localPath;   // file/dir on disk
 	UString     arcPath;     // path to store inside the archive
+	std::string arcU8;       // same path in UTF-8 (collision lookups vs entries())
 	bool        isDir = false;
 	UInt64      size = 0;
 	int64_t     mtime = 0;   // unix seconds
 };
 
 // Recursively collect a filesystem path into compress items (dirs first per level).
-void collectInto(const std::string& fsPath, const UString& arcName, std::vector<CompItem>& out) {
+// arcName/arcU8 are the same in-archive path in UTF-16 (for the handler) and UTF-8
+// (for our own collision checks); kept in lockstep so they never diverge.
+void collectInto(const std::string& fsPath, const UString& arcName, const std::string& arcU8,
+                 std::vector<CompItem>& out) {
 	struct stat st;
 	if (::stat(fsPath.c_str(), &st) != 0) return;
 	if (S_ISDIR(st.st_mode)) {
-		CompItem d; d.localPath = fsPath; d.arcPath = arcName; d.isDir = true; d.mtime = st.st_mtime;
+		CompItem d; d.localPath = fsPath; d.arcPath = arcName; d.arcU8 = arcU8; d.isDir = true; d.mtime = st.st_mtime;
 		out.push_back(d);
 		DIR* dir = ::opendir(fsPath.c_str()); if (!dir) return;
 		std::vector<std::string> names;
@@ -513,9 +518,9 @@ void collectInto(const std::string& fsPath, const UString& arcName, std::vector<
 		::closedir(dir);
 		std::sort(names.begin(), names.end());
 		for (const std::string& n : names)
-			collectInto(fsPath + "/" + n, arcName + L"/" + GetUnicodeString(n.c_str()), out);
+			collectInto(fsPath + "/" + n, arcName + L"/" + GetUnicodeString(n.c_str()), arcU8 + "/" + n, out);
 	} else if (S_ISREG(st.st_mode)) {
-		CompItem f; f.localPath = fsPath; f.arcPath = arcName; f.isDir = false;
+		CompItem f; f.localPath = fsPath; f.arcPath = arcName; f.arcU8 = arcU8; f.isDir = false;
 		f.size = (UInt64)st.st_size; f.mtime = st.st_mtime;
 		out.push_back(f);
 	}
@@ -657,7 +662,7 @@ bool NextZipEngine::compress(const std::string& destPath, const CompressOptions&
 			while (!root.empty() && root.front() == '/') root.erase(root.begin());
 		}
 		if (root.empty()) { m_error = "invalid input path"; return false; }
-		collectInto(in, GetUnicodeString(root.c_str()), items);
+		collectInto(in, GetUnicodeString(root.c_str()), root, items);
 	}
 	if (items.empty()) { m_error = "nothing to compress"; return false; }
 	if (isSingleStreamFmt(opt.format)) {
@@ -743,6 +748,162 @@ bool NextZipEngine::compress(const std::string& destPath, const CompressOptions&
 
 	if (opt.deleteAfter) for (const std::string& in : inputs) removePathRecursive(in);
 	return true;
+}
+
+// ── add filesystem items to an existing archive ──────────────────────────────
+// CAddCB drives one IOutArchive::UpdateItems pass over an operation list: each op
+// is either "keep existing entry i" (copy through, like CUpdateCB) or "new item k"
+// (served from the CompItem list, like CCreateCB). Collisions are resolved by the
+// caller into the op list (a colliding existing slot becomes a "new item" op), so
+// the callback itself stays simple.
+namespace {
+struct AddOp {
+	bool   isNew = false;   // true → take data/props from _items[comp]; false → copy existing
+	UInt32 src   = 0;       // existing archive index (when !isNew)
+	UInt32 comp  = 0;       // index into _items (when isNew)
+};
+
+class CAddCB Z7_final :
+	public IArchiveUpdateCallback,
+	public ICryptoGetTextPassword2,
+	public CMyUnknownImp
+{
+	Z7_IFACES_IMP_UNK_2(IArchiveUpdateCallback, ICryptoGetTextPassword2)
+	Z7_IFACE_COM7_IMP(IProgress)
+	const std::vector<CompItem>* _items = nullptr;
+	const std::vector<AddOp>*    _ops = nullptr;
+public:
+	UString Password;
+	bool    PasswordIsDefined = false;
+	UInt64  NumErrors = 0;
+	void Init(const std::vector<CompItem>* items, const std::vector<AddOp>* ops, const std::string& pw) {
+		_items = items; _ops = ops; NumErrors = 0;
+		if (!pw.empty()) { Password = GetUnicodeString(pw.c_str()); PasswordIsDefined = true; }
+	}
+};
+
+Z7_COM7F_IMF(CAddCB::SetTotal(UInt64))            { return S_OK; }
+Z7_COM7F_IMF(CAddCB::SetCompleted(const UInt64*)) { return S_OK; }
+
+Z7_COM7F_IMF(CAddCB::GetUpdateItemInfo(UInt32 index, Int32* newData, Int32* newProps, UInt32* indexInArchive)) {
+	const AddOp& op = (*_ops)[index];
+	if (op.isNew) { *newData = 1; *newProps = 1; *indexInArchive = (UInt32)(Int32)-1; }   // new / replace
+	else          { *newData = 0; *newProps = 0; *indexInArchive = op.src; }               // copy existing
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CAddCB::GetProperty(UInt32 index, PROPID propID, PROPVARIANT* value)) {
+	NCOM::CPropVariant prop;
+	const AddOp& op = (*_ops)[index];
+	if (op.isNew && _items && op.comp < _items->size()) {
+		const CompItem& it = (*_items)[op.comp];
+		switch (propID) {
+			case kpidPath:   prop = it.arcPath.Ptr(); break;
+			case kpidIsDir:  prop = it.isDir; break;
+			case kpidSize:   prop = (UInt64)(it.isDir ? 0 : it.size); break;   // always VT_UI8 (tar requires it)
+			case kpidAttrib: prop = (UInt32)(it.isDir ? 0x10 : 0x20); break;   // DIRECTORY / ARCHIVE
+			case kpidMTime:  { FILETIME ft; UnixToFileTime(it.mtime, ft); prop = ft; break; }
+			default: break;
+		}
+	}
+	prop.Detach(value);
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CAddCB::GetStream(UInt32 index, ISequentialInStream** inStream)) {
+	*inStream = NULL;
+	const AddOp& op = (*_ops)[index];
+	if (!op.isNew || !_items || op.comp >= _items->size()) return S_OK;   // copied items: no stream
+	const CompItem& it = (*_items)[op.comp];
+	if (it.isDir) return S_OK;
+	CInFileStream* s = new CInFileStream;
+	CMyComPtr<ISequentialInStream> sp(s);
+	if (!s->Open(us2fs(GetUnicodeString(it.localPath.c_str())))) { NumErrors++; return S_OK; }
+	*inStream = sp.Detach();
+	return S_OK;
+}
+
+Z7_COM7F_IMF(CAddCB::SetOperationResult(Int32 op)) { if (op != 0) NumErrors++; return S_OK; }
+
+Z7_COM7F_IMF(CAddCB::CryptoGetTextPassword2(Int32* passwordIsDefined, BSTR* password)) {
+	*passwordIsDefined = PasswordIsDefined ? 1 : 0;
+	return PasswordIsDefined ? StringToBstr(Password, password) : S_OK;
+}
+} // namespace
+
+bool NextZipEngine::addPaths(const std::vector<std::string>& inputs, const std::string& destPrefix,
+                             const std::string& password) {
+	m_error.clear();
+	if (!m_impl->arc) { m_error = "no archive open"; return false; }
+	if (isSingleStreamFmt(m_format)) {
+		m_error = "can't add files to a single-stream archive (gzip/bzip2/xz)"; return false;
+	}
+	CMyComPtr<IOutArchive> outArc;
+	if (m_impl->arc->QueryInterface(IID_IOutArchive, (void**)&outArc) != S_OK || !outArc) {
+		m_error = "this archive format is read-only — cannot add files (e.g. RAR)"; return false;
+	}
+	if (inputs.empty()) { m_error = "no files to add"; return false; }
+
+	// Normalize the in-archive destination folder ("a/b": no leading/trailing '/').
+	std::string prefix = destPrefix;
+	while (!prefix.empty() && prefix.front() == '/') prefix.erase(prefix.begin());
+	while (!prefix.empty() && prefix.back()  == '/') prefix.pop_back();
+
+	// Collect new filesystem items, each rooted at <prefix>/<basename>.
+	std::vector<CompItem> items;
+	for (std::string in : inputs) {
+		while (in.size() > 1 && in.back() == '/') in.pop_back();
+		std::string base = in;
+		if (size_t s = base.find_last_of('/'); s != std::string::npos) base = base.substr(s + 1);
+		if (base.empty()) continue;
+		std::string arcRoot = prefix.empty() ? base : (prefix + "/" + base);
+		collectInto(in, GetUnicodeString(arcRoot.c_str()), arcRoot, items);
+	}
+	if (items.empty()) { m_error = "nothing to add (no readable files)"; return false; }
+
+	// Build the output op list: keep every existing entry, but if a new item's
+	// path collides with one, replace it in place (no duplicate); append the rest.
+	std::unordered_map<std::string, size_t> newByPath;
+	for (size_t k = 0; k < items.size(); k++) newByPath[items[k].arcU8] = k;
+	std::vector<char> consumed(items.size(), 0);
+	std::vector<AddOp> ops;
+	ops.reserve(m_entries.size() + items.size());
+	for (size_t i = 0; i < m_entries.size(); i++) {
+		auto it = newByPath.find(m_entries[i].path);
+		if (it != newByPath.end()) {
+			AddOp op; op.isNew = true; op.comp = (UInt32)it->second; ops.push_back(op);   // replace in place
+			consumed[it->second] = 1;
+		} else {
+			AddOp op; op.isNew = false; op.src = (UInt32)i; ops.push_back(op);             // keep
+		}
+	}
+	for (size_t k = 0; k < items.size(); k++)
+		if (!consumed[k]) { AddOp op; op.isNew = true; op.comp = (UInt32)k; ops.push_back(op); }
+
+	const std::string tmp = m_archivePath + ".nztmp";
+	{
+		COutFileStream* outSpec = new COutFileStream;
+		CMyComPtr<IOutStream> outStream(outSpec);
+		if (!outSpec->Create_ALWAYS(us2fs(GetUnicodeString(tmp.c_str())))) {
+			m_error = "cannot create temp output: " + tmp; return false;
+		}
+		CAddCB* cb = new CAddCB;
+		CMyComPtr<IArchiveUpdateCallback> cbPtr(cb);
+		cb->Init(&items, &ops, password);
+		HRESULT hr = outArc->UpdateItems(outStream, (UInt32)ops.size(), cbPtr);
+		outStream.Release();
+		if (hr != S_OK || cb->NumErrors) {
+			::remove(tmp.c_str());
+			char buf[80]; snprintf(buf, sizeof buf, "add failed (0x%08X)", (unsigned)hr);
+			m_error = buf; return false;
+		}
+	}
+	// Replace the original with the rebuilt archive, then re-open.
+	std::string arcPath = m_archivePath;
+	close();
+	outArc.Release();
+	if (::rename(tmp.c_str(), arcPath.c_str()) != 0) { ::remove(tmp.c_str()); m_error = "could not replace archive"; return false; }
+	return open(arcPath);
 }
 
 // ── delete entries (rewrite archive without them) ────────────────────────────
