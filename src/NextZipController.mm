@@ -152,7 +152,8 @@ BOOL looksLikeArchive(NSString* path) {
 // ─────────────────────────────────────────────────────────────────────────────
 @interface NextZipController () <NSTableViewDataSource, NSTableViewDelegate,
                                 NSOutlineViewDataSource, NSOutlineViewDelegate,
-                                NSMenuDelegate, NSWindowDelegate, NSSearchFieldDelegate>
+                                NSMenuDelegate, NSWindowDelegate, NSSearchFieldDelegate,
+                                NSFilePromiseProviderDelegate>
 @end
 
 @implementation NextZipController {
@@ -177,6 +178,8 @@ BOOL looksLikeArchive(NSString* path) {
 	NSMenu*                        _arcMenu;         // bottom-pane right-click menu
 	// temp files opened in the editor → how to write them back (incl. nested chain)
 	std::map<std::string, OpenedTemp> _openedTemps;
+	NSString*                      _enginePath;      // bundled 7z.so path (app), for fresh engines on the drag queue
+	NSOperationQueue*              _dragExtractQueue; // background queue for drag-out (file promises)
 }
 
 - (instancetype)init {
@@ -187,6 +190,7 @@ BOOL looksLikeArchive(NSString* path) {
 
 - (void)setEnginePath:(NSString*)sevenZipSoPath {
 	if (sevenZipSoPath.length && _engine) _engine->setEnginePath(sevenZipSoPath.UTF8String);
+	_enginePath = [sevenZipSoPath copy];   // reused by fresh engines on the drag-out queue
 }
 
 // ── window + toolbar ─────────────────────────────────────────────────────────
@@ -341,6 +345,12 @@ BOOL looksLikeArchive(NSString* path) {
 	_table.dataSource = self; _table.delegate = self;
 	_table.doubleAction = @selector(onDoubleClick:); _table.target = self;
 	_arcMenu = [[NSMenu alloc] initWithTitle:@"arc"]; _arcMenu.delegate = self; _table.menu = _arcMenu;
+	// App only (Finder-like): drag archives/files INTO the pane (open or add), and
+	// drag entries OUT to Finder (extract on drop, via file promises).
+	if (_sideBySidePanes) {
+		[_table registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+		[_table setDraggingSourceOperationMask:NSDragOperationCopy forLocal:NO];
+	}
 	sc.documentView = _table;
 	[arc addSubview:sc];
 	// Orientation-independent constraints for the archive pane.
@@ -605,6 +615,199 @@ BOOL looksLikeArchive(NSString* path) {
 	if (!n) return;
 	if (n->isDir) { [self navigateTo:n]; return; }
 	[self openEntryInEditor:n];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Drag & drop (standalone app only — gated on _sideBySidePanes at registration)
+//   • Drop a single archive       → open it + reveal its folder in the FS pane.
+//   • Drop files/folders          → add them to the open archive (current folder).
+//   • Drag entries out to Finder  → extract on drop (lazy file promises).
+// Disambiguation: one archive file opens (Feature 1); anything else adds
+// (Feature 3); hold ⌥ Option to force-add a lone archive instead of opening.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── drop INTO the archive pane ──────────────────────────────────────────────
+- (NSDragOperation)tableView:(NSTableView*)tv validateDrop:(id<NSDraggingInfo>)info
+                 proposedRow:(NSInteger)row proposedDropOperation:(NSTableViewDropOperation)op {
+	if (info.draggingSource == _table) return NSDragOperationNone;   // never drop our own drag onto ourselves
+	if (![info.draggingPasteboard canReadObjectForClasses:@[NSURL.class]
+	      options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}]) return NSDragOperationNone;
+	[tv setDropRow:-1 dropOperation:NSTableViewDropOn];             // accept onto the table as a whole
+	return NSDragOperationCopy;
+}
+
+- (BOOL)tableView:(NSTableView*)tv acceptDrop:(id<NSDraggingInfo>)info
+              row:(NSInteger)row dropOperation:(NSTableViewDropOperation)op {
+	NSArray<NSURL*>* urls = [info.draggingPasteboard readObjectsForClasses:@[NSURL.class]
+	                          options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+	return [self handleDroppedURLs:urls];
+}
+
+- (BOOL)handleDroppedURLs:(NSArray<NSURL*>*)urls {
+	NSMutableArray<NSURL*>* files = [NSMutableArray array];
+	for (NSURL* u in urls) if (u.isFileURL && u.path.length) [files addObject:u];
+	if (files.count == 0) return NO;
+	BOOL optionDown = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+
+	// Feature 1: a lone archive file opens (unless ⌥ forces add).
+	if (files.count == 1 && !optionDown &&
+	    looksLikeArchive(files[0].path) && !pathIsDir(files[0].path)) {
+		[self openArchiveAtPath:files[0].path];
+		[self revealFolderInFsPane:[files[0].path stringByDeletingLastPathComponent]];
+		return YES;
+	}
+	// Feature 3: add to the currently-open archive.
+	if (_root && _engine) { [self addDroppedPathsToArchive:files]; return YES; }
+	// Nothing open: fall back to opening the first archive in the drop, if any.
+	for (NSURL* u in files)
+		if (looksLikeArchive(u.path) && !pathIsDir(u.path)) {
+			[self openArchiveAtPath:u.path];
+			[self revealFolderInFsPane:[u.path stringByDeletingLastPathComponent]];
+			return YES;
+		}
+	return NO;
+}
+
+// Feature 3 — add dropped filesystem paths into the open archive at the current
+// folder, propagate through nested layers, and refresh the view in place.
+- (void)addDroppedPathsToArchive:(NSArray<NSURL*>*)urls {
+	if (!_root || !_engine) return;
+	std::vector<std::string> inputs;
+	for (NSURL* u in urls) if (u.isFileURL && u.path.length) inputs.push_back(u.path.UTF8String);
+	if (inputs.empty()) return;
+
+	std::string prefix;                                   // destination folder inside the archive
+	if (_cwd) { std::vector<std::string> c = nodePath(_cwd); for (size_t i = 0; i < c.size(); i++) { if (i) prefix += "/"; prefix += c[i]; } }
+	std::string pw = _archivePassword.length ? std::string(_archivePassword.UTF8String) : std::string();
+
+	if (!_engine->addPaths(inputs, prefix, pw)) {
+		[self alert:@"Could not add to archive" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
+		return;
+	}
+	// Nested (.tar.gz etc.): the inner temp changed → re-wrap outward to the real file.
+	if (_layers.size() > 1) {
+		std::string err;
+		if (![self rewrapOutwardFromInner:err])
+			[self alert:@"Added inside, but couldn't update the outer archive" info:[NSString stringWithUTF8String:err.c_str()]];
+	}
+	// Rebuild the tree, staying in the current folder (re-resolve by path post-rebuild).
+	std::vector<std::string> cwdPath = _cwd ? nodePath(_cwd) : std::vector<std::string>();
+	freeTree(_root); _root = buildTree(_engine->entries());
+	FMNode* dest = findDirByPath(_root, cwdPath);
+	[self navigateTo:dest ? dest : _root];
+}
+
+// Feature 1 — expand the FS outline down to `dirPath` and select it (no archive
+// is opened by selecting a folder; the selection handler ignores directories).
+- (void)revealFolderInFsPane:(NSString*)dirPath {
+	if (!dirPath.length || !_fsOutline) return;
+	NSURL* root = nil;
+	for (NSURL* r in _fsRoots) {
+		NSString* rp = r.path;
+		NSString* rpSlash = [rp hasSuffix:@"/"] ? rp : [rp stringByAppendingString:@"/"];
+		if ([dirPath isEqualToString:rp] || [dirPath hasPrefix:rpSlash]) { root = r; break; }
+	}
+	if (!root) root = _fsRoots.lastObject;   // "/" always qualifies
+	if (!root) return;
+
+	// Ancestor chain from just-below-root down to dirPath.
+	NSMutableArray<NSString*>* chain = [NSMutableArray array];
+	NSString* p = dirPath;
+	while (p.length && ![p isEqualToString:root.path]) {
+		[chain insertObject:p atIndex:0];
+		NSString* parent = [p stringByDeletingLastPathComponent];
+		if (!parent.length || [parent isEqualToString:p]) break;
+		p = parent;
+	}
+	[_fsOutline expandItem:root];
+	id current = root;
+	for (NSString* target in chain) {
+		NSURL* match = nil;
+		for (NSURL* k in [self fsChildren:current]) if ([k.path isEqualToString:target]) { match = k; break; }
+		if (!match) break;
+		[_fsOutline expandItem:match];
+		current = match;
+	}
+	NSInteger row = [_fsOutline rowForItem:current];
+	if (row >= 0) {
+		[_fsOutline selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
+		[_fsOutline scrollRowToVisible:row];
+	}
+}
+
+// ── drag OUT of the archive pane (file promises → extract on drop) ───────────
+- (id<NSPasteboardWriting>)tableView:(NSTableView*)tv pasteboardWriterForRow:(NSInteger)row {
+	if (!_sideBySidePanes) return nil;
+	FMNode* n = [self nodeAtRow:row];
+	if (!n) return nil;
+	std::vector<uint32_t> idx; gatherEntryIndices(n, idx);
+	if (idx.empty()) return nil;                 // nothing extractable (e.g. empty synthetic folder)
+
+	std::vector<std::string> comps = nodePath(n);
+	std::string arc; for (size_t i = 0; i < comps.size(); i++) { if (i) arc += "/"; arc += comps[i]; }
+	NSMutableArray<NSNumber*>* inums = [NSMutableArray arrayWithCapacity:idx.size()];
+	for (uint32_t v : idx) [inums addObject:@(v)];
+
+	NSString* fileType = n->isDir ? @"public.folder" : @"public.data";
+	NSFilePromiseProvider* prov = [[NSFilePromiseProvider alloc] initWithFileType:fileType delegate:self];
+	prov.userInfo = @{ @"name":        [NSString stringWithUTF8String:n->name.c_str()],
+	                   @"arcPath":     [NSString stringWithUTF8String:arc.c_str()],
+	                   @"indices":     inums,
+	                   @"archivePath": _archivePath ?: @"",
+	                   @"password":    _archivePassword ?: @"",
+	                   @"enginePath":  _enginePath ?: @"" };
+	return prov;
+}
+
+- (NSString*)filePromiseProvider:(NSFilePromiseProvider*)fpp fileNameForType:(NSString*)fileType {
+	NSString* name = [(NSDictionary*)fpp.userInfo objectForKey:@"name"];
+	return name.length ? name : @"item";
+}
+
+- (NSOperationQueue*)operationQueueForFilePromiseProvider:(NSFilePromiseProvider*)fpp {
+	if (!_dragExtractQueue) {
+		_dragExtractQueue = [[NSOperationQueue alloc] init];
+		_dragExtractQueue.maxConcurrentOperationCount = 1;   // serialize extractions
+	}
+	return _dragExtractQueue;
+}
+
+// Runs on the background queue above. Uses a FRESH engine (thread isolation) and
+// an immutable snapshot captured at drag start, so it never touches live UI state.
+- (void)filePromiseProvider:(NSFilePromiseProvider*)fpp writePromiseToURL:(NSURL*)url
+          completionHandler:(void (^)(NSError*))completionHandler {
+	NSDictionary* info = (NSDictionary*)fpp.userInfo;
+	NSError* (^fail)(const std::string&) = ^NSError*(const std::string& m) {
+		NSString* s = m.empty() ? @"extract failed" : [NSString stringWithUTF8String:m.c_str()];
+		return [NSError errorWithDomain:@"NextZip" code:1 userInfo:@{NSLocalizedDescriptionKey: s}];
+	};
+	NSFileManager* fm = [NSFileManager defaultManager];
+
+	NextZipEngine eng;
+	NSString* enginePath = info[@"enginePath"];
+	if (enginePath.length) eng.setEnginePath(enginePath.UTF8String);
+	NSString* archivePath = info[@"archivePath"];
+	if (!archivePath.length || !eng.open(archivePath.UTF8String)) {
+		completionHandler(fail(eng.error())); return;
+	}
+	std::vector<uint32_t> idx;
+	for (NSNumber* n in (NSArray<NSNumber*>*)info[@"indices"]) idx.push_back(n.unsignedIntValue);
+
+	NSString* temp = [NSTemporaryDirectory() stringByAppendingPathComponent:
+	                  [@"NextZipDrag-" stringByAppendingString:[[NSUUID UUID] UUIDString]]];
+	[fm createDirectoryAtPath:temp withIntermediateDirectories:YES attributes:nil error:nil];
+	NSString* pw = info[@"password"];
+	std::string p = pw.length ? std::string(pw.UTF8String) : std::string();
+	if (!eng.extract(idx, temp.UTF8String, p, false, 0, false)) {
+		std::string e = eng.error(); [fm removeItemAtPath:temp error:nil];
+		completionHandler(fail(e)); return;
+	}
+	NSString* extracted = [temp stringByAppendingPathComponent:info[@"arcPath"]];
+	[fm removeItemAtURL:url error:nil];                       // overwrite any prepared placeholder
+	NSError* mvErr = nil;
+	BOOL moved = [fm moveItemAtPath:extracted toPath:url.path error:&mvErr];
+	[fm removeItemAtPath:temp error:nil];
+	completionHandler(moved ? nil : (mvErr ?: fail("could not place extracted item")));
 }
 
 // ── top pane: filesystem browser ────────────────────────────────────────────
