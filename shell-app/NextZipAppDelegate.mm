@@ -1,14 +1,20 @@
 #import "NextZipAppDelegate.h"
 #import "NextZipMainWindowController.h"
 #import "NextZipMenuBuilder.h"
+#import "NextZipDialogs.h"
+#include "SevenZipEngine.h"
 
 // MRU of recently-opened archive paths.
 static NSString* const kRecentArchivesKey = @"NextZipRecentArchives";
 static const NSUInteger kMaxRecent = 12;
 static NSString* const kHelpURL = @"https://github.com/nextpad-plus-plus-plugins/NextZip.macos";
 
+// The bundled 7-Zip engine (Contents/Resources/7z.so).
+static NSString* bundledSevenZipSo(void) { return [[NSBundle mainBundle] pathForResource:@"7z" ofType:@"so"]; }
+
 @implementation NextZipAppDelegate {
 	NSMutableArray<NextZipMainWindowController*>* _wcs;
+	BOOL _serviceInvoked;   // a Finder Service ran → don't also pop an empty window on cold start
 }
 
 - (instancetype)init {
@@ -20,15 +26,136 @@ static NSString* const kHelpURL = @"https://github.com/nextpad-plus-plus-plugins
 
 - (void)applicationWillFinishLaunching:(NSNotification*)note {
 	[NSApp setMainMenu:[NextZipMenuBuilder buildMainMenuForDelegate:self]];
+	[NSApp setServicesProvider:self];   // Finder right-click → Services (see NSServices in Info.plist)
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)note {
 	// If Finder/open didn't already hand us an archive (which would have
-	// created a window in application:openURLs:), open one empty browse window.
-	// Deferred a turn so a same-launch openURLs: wins the race.
+	// created a window in application:openURLs:), open one empty browse window —
+	// unless a Finder Service cold-started us (then just run the service).
 	dispatch_async(dispatch_get_main_queue(), ^{
-		if (self->_wcs.count == 0) [self _openWindowForArchive:nil];
+		if (self->_wcs.count == 0 && !self->_serviceInvoked) [self _openWindowForArchive:nil];
 	});
+}
+
+#pragma mark - Finder Services (NSServices)
+
+- (void)nzAddToArchive:(NSPasteboard*)pboard userData:(NSString*)userData error:(NSString**)error {
+	[self _serviceCompress:[self _filePathsFromPasteboard:pboard] thenEmail:NO];
+}
+
+- (void)nzCompressAndEmail:(NSPasteboard*)pboard userData:(NSString*)userData error:(NSString**)error {
+	[self _serviceCompress:[self _filePathsFromPasteboard:pboard] thenEmail:YES];
+}
+
+- (NSArray<NSString*>*)_filePathsFromPasteboard:(NSPasteboard*)pboard {
+	_serviceInvoked = YES;
+	NSMutableArray<NSString*>* paths = [NSMutableArray array];
+	for (NSURL* u in [pboard readObjectsForClasses:@[NSURL.class]
+	                   options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}])
+		if (u.isFileURL && u.path.length) [paths addObject:u.path];
+	if (paths.count == 0) {                                   // legacy Finder fallback
+		id names = [pboard propertyListForType:NSFilenamesPboardType];
+		if ([names isKindOfClass:[NSArray class]])
+			for (id p in (NSArray*)names) if ([p isKindOfClass:[NSString class]] && [p length]) [paths addObject:p];
+	}
+	return paths;
+}
+
+// Run the shared Add-to-Archive dialog for the Finder selection, compress with a
+// fresh engine, then reveal the result in Finder — or attach it to a new email.
+- (void)_serviceCompress:(NSArray<NSString*>*)paths thenEmail:(BOOL)email {
+	if (paths.count == 0) return;
+	[NSApp activateIgnoringOtherApps:YES];
+
+	NZAddOptions* o = [NextZipDialogs runAddForInputs:paths];
+	if (!o || o.archivePath.length == 0) return;             // cancelled
+	if ([[NSFileManager defaultManager] fileExistsAtPath:o.archivePath]) {
+		[self _serviceAlert:@"Archive already exists"
+		               info:[NSString stringWithFormat:@"%@\n\n(Adding into an existing archive isn't supported here.)", o.archivePath]];
+		return;
+	}
+
+	NextZipEngine eng;
+	NSString* so = bundledSevenZipSo();
+	if (so.length) eng.setEnginePath(so.UTF8String);
+	NextZipEngine::CompressOptions opt;
+	opt.format        = o.format.UTF8String;
+	opt.level         = o.level;
+	opt.method        = o.method.length        ? o.method.UTF8String        : "";
+	opt.dict          = o.dict;
+	opt.wordSize      = o.wordSize;
+	opt.solid         = o.solid.length         ? o.solid.UTF8String         : "";
+	opt.threads       = o.threads;
+	opt.memusePercent = o.memusePercent.length ? o.memusePercent.UTF8String : "";
+	opt.password      = o.password.length      ? o.password.UTF8String      : "";
+	opt.encMethod     = o.encMethod.length     ? o.encMethod.UTF8String     : "";
+	opt.encryptNames  = o.encryptNames;
+	opt.pathMode      = o.pathMode;
+	opt.deleteAfter   = o.deleteAfter;
+	opt.extraParams   = o.extraParams.length   ? o.extraParams.UTF8String   : "";
+	std::vector<std::string> ins;
+	for (NSString* p in paths) ins.push_back(p.UTF8String);
+
+	if (!eng.compress(o.archivePath.UTF8String, opt, ins)) {
+		[self _serviceAlert:@"Could not create archive" info:[NSString stringWithUTF8String:eng.error().c_str()]];
+		return;
+	}
+	NSURL* arcURL = [NSURL fileURLWithPath:o.archivePath];
+	if (!email) {
+		[[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[arcURL]];   // reveal in Finder
+		return;
+	}
+	[self _emailArchiveAtPath:o.archivePath];
+}
+
+// Open a new message in the user's DEFAULT mail app with the archive attached.
+// Scripts the default app directly (reliable + actually attaches), with the
+// system email share service and a reveal-and-mailto fallback.
+- (void)_emailArchiveAtPath:(NSString*)path {
+	NSURL* arcURL  = [NSURL fileURLWithPath:path];
+	NSURL* mailApp = [[NSWorkspace sharedWorkspace] URLForApplicationToOpenURL:[NSURL URLWithString:@"mailto:"]];
+	NSString* bid  = [NSBundle bundleWithURL:mailApp].bundleIdentifier.lowercaseString;
+	NSString* esc  = [[path stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+	                   stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
+
+	NSString* script = nil;
+	if ([bid isEqualToString:@"com.apple.mail"]) {
+		script = [NSString stringWithFormat:
+			@"tell application \"Mail\"\n"
+			 "activate\n"
+			 "set m to make new outgoing message with properties {visible:true}\n"
+			 "tell content of m to make new attachment with properties {file name:(POSIX file \"%@\")} at after the last paragraph\n"
+			 "end tell", esc];
+	} else if ([bid hasPrefix:@"com.microsoft.outlook"]) {
+		script = [NSString stringWithFormat:
+			@"tell application \"Microsoft Outlook\"\n"
+			 "activate\n"
+			 "set m to make new outgoing message\n"
+			 "make new attachment at m with properties {file:(POSIX file \"%@\")}\n"
+			 "open m\n"
+			 "end tell", esc];
+	}
+	if (script) {
+		NSDictionary* err = nil;
+		[[[NSAppleScript alloc] initWithSource:script] executeAndReturnError:&err];
+		if (!err) return;
+		NSLog(@"[NextZip] mail-attach AppleScript failed (%@): %@", bid, err[NSAppleScriptErrorMessage]);
+	}
+	// Fallback 1: the system email share service (Apple Mail).
+	NSSharingService* mail = [NSSharingService sharingServiceNamed:NSSharingServiceNameComposeEmail];
+	if (mail && [mail canPerformWithItems:@[arcURL]]) { [mail performWithItems:@[arcURL]]; return; }
+	// Fallback 2: open a blank message in the default app + select the file to drag in.
+	[[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[arcURL]];
+	[[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"mailto:?subject=Archive%20attached"]];
+	[self _serviceAlert:@"Archive created — attach it manually"
+	               info:[NSString stringWithFormat:@"%@\n\nYour mail app couldn't be scripted to attach the file. It's now selected in Finder — drag it into the new message.", path]];
+}
+
+- (void)_serviceAlert:(NSString*)msg info:(NSString*)info {
+	NSAlert* a = [[NSAlert alloc] init];
+	a.messageText = msg; a.informativeText = info ?: @"";
+	[a addButtonWithTitle:@"OK"]; [a runModal];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender { return YES; }
