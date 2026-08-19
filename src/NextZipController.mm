@@ -265,6 +265,7 @@ BOOL looksLikeArchive(NSString* path) {
 		[self toolButton:@"Test archive" symbol:@"checkmark.shield" action:@selector(fsTest:)],
 		[self toolButton:@"Delete (to Trash)" symbol:@"trash" action:@selector(fsDelete:)],
 		[self toolButton:@"Info / Checksum" symbol:@"info.circle" action:@selector(fsInfo:)],
+		[self toolButton:@"Refresh" symbol:@"arrow.clockwise" action:@selector(fsRefresh:)],
 	]];
 	fstb.orientation = NSUserInterfaceLayoutOrientationHorizontal;
 	fstb.spacing = 6; fstb.translatesAutoresizingMaskIntoConstraints = NO;
@@ -313,6 +314,7 @@ BOOL looksLikeArchive(NSString* path) {
 		[self toolButton:@"Extract…" symbol:@"square.and.arrow.up" action:@selector(actExtract:)],
 		[self toolButton:@"Test" symbol:@"checkmark.shield" action:@selector(actTest:)],
 		[self toolButton:@"Info" symbol:@"info.circle" action:@selector(actInfo:)],
+		[self toolButton:@"Refresh" symbol:@"arrow.clockwise" action:@selector(actRefresh:)],
 	]];
 	tb.orientation = NSUserInterfaceLayoutOrientationHorizontal;
 	tb.spacing = 6; tb.translatesAutoresizingMaskIntoConstraints = NO;
@@ -1051,6 +1053,8 @@ BOOL looksLikeArchive(NSString* path) {
 	for (id it in expanded) [_fsOutline expandItem:it];
 }
 
+- (void)fsRefresh:(id)s { [self refreshFs]; }
+
 - (void)fsAdd:(id)s {
 	NSArray<NSString*>* inputs = [self selectedFsPaths];
 	if (inputs.count == 0) { [self alert:@"Add to Archive" info:@"Select one or more files or folders first."]; return; }
@@ -1359,6 +1363,17 @@ static NSString* nzExtractFolderName(NSString* archivePath) {
 }
 
 - (void)actOpen:(id)s { [self showOpenPanel]; }
+
+// Reload the on-screen archive from disk (it may have changed underneath us),
+// staying in the current folder when it still exists after the reload.
+- (void)actRefresh:(id)s {
+	if (!_displayPath.length) return;
+	std::vector<std::string> cwdPath = _cwd ? nodePath(_cwd) : std::vector<std::string>();
+	[self openArchiveAtPath:_displayPath];
+	if (!_root || cwdPath.empty()) return;
+	FMNode* dest = findDirByPath(_root, cwdPath);
+	if (dest) [self navigateTo:dest];
+}
 
 - (void)actExtract:(id)s {
 	if (!_root) return;
