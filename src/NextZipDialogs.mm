@@ -26,6 +26,7 @@ static NSStackView* nzRow(NSArray* views) {
 static NSString* nzExtForFormat(NSString* f) {
 	if ([f isEqualToString:@"zip"])   return @"zip";
 	if ([f isEqualToString:@"tar"])   return @"tar";
+	if ([f isEqualToString:@"tgz"])   return @"tgz";
 	if ([f isEqualToString:@"gzip"])  return @"gz";
 	if ([f isEqualToString:@"bzip2"]) return @"bz2";
 	if ([f isEqualToString:@"xz"])    return @"xz";
@@ -144,6 +145,7 @@ static NSBox* nzBox(NSString* title, NSView* content) {
 	if (p.length) self.pathField.stringValue = [[p stringByDeletingPathExtension] stringByAppendingPathExtension:nzExtForFormat(f)];
 
 	BOOL is7z = [f isEqualToString:@"7z"], isZip = [f isEqualToString:@"zip"], isTar = [f isEqualToString:@"tar"];
+	BOOL isTgz = [f isEqualToString:@"tgz"];   // composite: tar pass + gzip pass — gzip's knobs apply
 	BOOL solidOK = is7z || [f isEqualToString:@"xz"];
 	BOOL mtOK    = is7z || isZip || [f isEqualToString:@"bzip2"] || [f isEqualToString:@"xz"];
 	BOOL encOK   = is7z || isZip;
@@ -153,7 +155,7 @@ static NSBox* nzBox(NSString* title, NSView* content) {
 	NSArray<NSString*>* methods;
 	if (is7z)                              methods = @[@"LZMA2",@"LZMA",@"PPMd",@"BZip2",@"Deflate",@"Deflate64",@"Copy"];
 	else if (isZip)                        methods = @[@"Deflate",@"Deflate64",@"BZip2",@"LZMA",@"PPMd"];
-	else if ([f isEqualToString:@"gzip"])  methods = @[@"Deflate"];
+	else if ([f isEqualToString:@"gzip"] || isTgz) methods = @[@"Deflate"];
 	else if ([f isEqualToString:@"bzip2"]) methods = @[@"BZip2"];
 	else if ([f isEqualToString:@"xz"])    methods = @[@"LZMA2"];
 	else                                   methods = @[];   // tar
@@ -169,7 +171,7 @@ static NSBox* nzBox(NSString* title, NSView* content) {
 		int n = [lv[1] intValue];
 		BOOL ok;
 		if (isTar) ok = (n == 0);
-		else if ([f isEqualToString:@"gzip"]) ok = (n==1||n==5||n==7||n==9);
+		else if ([f isEqualToString:@"gzip"] || isTgz) ok = (n==1||n==5||n==7||n==9);
 		else if ([f isEqualToString:@"bzip2"]) ok = (n==1||n==3||n==5||n==7||n==9);
 		else if ([f isEqualToString:@"xz"]) ok = (n!=0);
 		else ok = (n==0||n==1||n==3||n==5||n==7||n==9);   // 7z, zip
@@ -274,7 +276,7 @@ static NSBox* nzBox(NSString* title, NSView* content) {
 	NSButton* dots = [NSButton buttonWithTitle:@"…" target:self action:@selector(browse:)];
 	NSStackView* pathRow = nzRow(@[nzLabel(@"Archive:"), self.pathField, dots]);
 
-	self.fmtPopup = nzPopup(); [self.fmtPopup addItemsWithTitles:@[@"7z",@"zip",@"tar",@"gzip",@"bzip2",@"xz"]];
+	self.fmtPopup = nzPopup(); [self.fmtPopup addItemsWithTitles:@[@"7z",@"zip",@"tar",@"tgz",@"gzip",@"bzip2",@"xz"]];
 	self.fmtPopup.target = self; self.fmtPopup.action = @selector(formatChanged:);
 	self.levelPopup = nzPopup(); self.levelPopup.target = self; self.levelPopup.action = @selector(levelChanged:);
 	self.methodPopup = nzPopup(); self.methodPopup.target = self; self.methodPopup.action = @selector(methodChanged:);

@@ -73,7 +73,7 @@ public:
 	// names the Windows GUI uses (see UpdateGUI.cpp): x / 0|m / 0d|d / 0fb|fb /
 	// s / mt / em / he / memuse. Empty/0 fields mean "let the engine default".
 	struct CompressOptions {
-		std::string format = "7z";   // 7z|zip|tar|gzip|bzip2|xz
+		std::string format = "7z";   // 7z|zip|tar|tgz|gzip|bzip2|xz (tgz = tar pass + gzip pass)
 		int         level = 5;       // 0,1,3,5,7,9
 		std::string method;          // e.g. LZMA2/LZMA/PPMd/BZip2/Deflate ("" = default)
 		uint64_t    dict = 0;        // dictionary size in bytes (0 = auto)

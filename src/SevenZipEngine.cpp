@@ -25,6 +25,7 @@
 #include <dlfcn.h>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -645,6 +646,45 @@ bool NextZipEngine::compress(const std::string& destPath, const CompressOptions&
                              const std::vector<std::string>& inputs) {
 	m_error.clear();
 	if (!loadEngine()) return false;
+
+	// Composite tgz (like `tar czf`): tar the inputs into a temp file named
+	// <destBase>.tar — that basename becomes the gzip member name, which is what
+	// the nested-archive unwrap shows and re-wraps against — then gzip it to the
+	// destination at the requested level. Both passes reuse the plain code below.
+	// Inputs are deleted only after BOTH passes succeed.
+	if (opt.format == "tgz") {
+		if (inputs.empty()) { m_error = "no input files selected"; return false; }
+		std::string base = destPath;
+		if (size_t s = base.find_last_of("/\\"); s != std::string::npos) base = base.substr(s + 1);
+		if (size_t d = base.find_last_of('.'); d != std::string::npos && d > 0) base = base.substr(0, d);
+		std::string tdir;
+		{
+			const char* env = ::getenv("TMPDIR");
+			std::string t = (env && *env) ? env : "/tmp";
+			if (t.back() != '/') t += '/';
+			t += "nextzip-tgz-XXXXXX";
+			std::vector<char> buf(t.begin(), t.end()); buf.push_back('\0');
+			if (!::mkdtemp(buf.data())) { m_error = "could not create temp directory"; return false; }
+			tdir = buf.data();
+		}
+		const std::string tmpTar = tdir + "/" + base + ".tar";
+		CompressOptions tarOpt;
+		tarOpt.format   = "tar";
+		tarOpt.pathMode = opt.pathMode;
+		bool ok = compress(tmpTar, tarOpt, inputs);
+		if (ok) {
+			CompressOptions gzOpt;
+			gzOpt.format = "gzip";
+			gzOpt.level  = opt.level;
+			ok = compress(destPath, gzOpt, { tmpTar });
+		}
+		::unlink(tmpTar.c_str());
+		::rmdir(tdir.c_str());
+		if (!ok) return false;                        // m_error carries the failing pass's message
+		if (opt.deleteAfter) for (const std::string& in : inputs) removePathRecursive(in);
+		return true;
+	}
+
 	const Byte fid = writableFormatId(opt.format);
 	if (!fid) { m_error = "format is not writable: " + opt.format; return false; }
 	if (inputs.empty()) { m_error = "no input files selected"; return false; }

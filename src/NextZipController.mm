@@ -1108,13 +1108,22 @@ BOOL looksLikeArchive(NSString* path) {
 	else    [self alert:@"Add to Archive failed" info:[NSString stringWithUTF8String:_engine->error().c_str()]];
 }
 
+// Folder name for the "extract into subfolder" variants: strip one extension,
+// and for .tar.<z> doubles strip the inner .tar too (site.tar.gz → site;
+// notes.tgz already reduces to notes).
+static NSString* nzExtractFolderName(NSString* archivePath) {
+	NSString* base = [archivePath.lastPathComponent stringByDeletingPathExtension];
+	if ([base.pathExtension caseInsensitiveCompare:@"tar"] == NSOrderedSame)
+		base = [base stringByDeletingPathExtension];
+	return base.length ? base : archivePath.lastPathComponent;
+}
 - (void)fsExtract:(id)s {
 	NSString* a = [self singleArchiveSelection];
 	if (!a) { [self alert:@"Extract" info:@"Select a single archive file first."]; return; }
 	NZExtractOptions* o = [NextZipDialogs runExtractForArchive:a];
 	if (!o) return;
 	NSString* dest = o.destDir;
-	if (o.intoSubfolder) dest = [dest stringByAppendingPathComponent:[[a lastPathComponent] stringByDeletingPathExtension]];
+	if (o.intoSubfolder) dest = [dest stringByAppendingPathComponent:nzExtractFolderName(a)];
 	[self extractArchive:a to:dest password:o.password flatten:(o.pathMode == 1)
 	           overwrite:o.overwrite eliminateRoot:o.eliminateRoot];
 }
@@ -1125,18 +1134,38 @@ BOOL looksLikeArchive(NSString* path) {
 - (void)fsExtractToSub:(id)s {
 	NSString* a = [self singleArchiveSelection]; if (!a) return;
 	NSString* sub = [[a stringByDeletingLastPathComponent]
-	                  stringByAppendingPathComponent:[[a lastPathComponent] stringByDeletingPathExtension]];
+	                  stringByAppendingPathComponent:nzExtractFolderName(a)];
 	[self extractArchive:a to:sub password:@"" flatten:NO overwrite:0 eliminateRoot:NO];
 }
 - (void)extractArchive:(NSString*)archivePath to:(NSString*)dest password:(NSString*)pw
                flatten:(BOOL)flatten overwrite:(int)overwrite eliminateRoot:(BOOL)elim {
 	if (!archivePath.length || !dest.length) return;
-	NextZipEngine eng;                                  // fresh engine — don't disturb the open view
-	if (!eng.open(archivePath.UTF8String)) {
-		[self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng.error().c_str()]]; return;
+	std::unique_ptr<NextZipEngine> eng(new NextZipEngine());   // fresh engine — don't disturb the open view
+	if (_enginePath.length) eng->setEnginePath(_enginePath.UTF8String);
+	if (!eng->open(archivePath.UTF8String)) {
+		[self alert:@"Extract failed" info:[NSString stringWithUTF8String:eng->error().c_str()]]; return;
+	}
+	// Tarball descent, GATED to the .tar.gz/.tgz family: only when a
+	// single-stream wrapper's lone payload is a TAR do we extract the tar's
+	// files instead of the bare inner file. Anything else keeps the plain
+	// wrapper behavior — data.json.gz yields data.json, archive.zip.gz yields
+	// archive.zip (not the zip's contents).
+	for (int guard = 0; guard < 6; guard++) {
+		if (!isSingleStream(eng->format())) break;
+		if (eng->entries().size() != 1 || eng->entries()[0].isDir) break;
+		NSString* tmpDir = [self newLayerTempDir];
+		if (!eng->extract({0}, tmpDir.UTF8String)) break;
+		NSArray<NSString*>* kids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:tmpDir error:nil];
+		if (kids.count != 1) break;
+		NSString* innerPath = [tmpDir stringByAppendingPathComponent:kids[0]];
+		std::unique_ptr<NextZipEngine> probe(new NextZipEngine());
+		if (_enginePath.length) probe->setEnginePath(_enginePath.UTF8String);
+		if (!probe->open(innerPath.UTF8String) || probe->format() != "tar")
+			break;                                                  // not a tarball → extract the wrapper as-is
+		eng = std::move(probe);
 	}
 	std::vector<uint32_t> all;                          // empty = everything
-	BOOL ok = [self extractWithEngine:&eng indices:all to:dest initialPw:pw
+	BOOL ok = [self extractWithEngine:eng.get() indices:all to:dest initialPw:pw
 	                          flatten:flatten overwrite:overwrite eliminateRoot:elim
 	                      archiveName:archivePath.lastPathComponent usedPassword:NULL];
 	[self refreshFs];
@@ -1293,6 +1322,7 @@ BOOL looksLikeArchive(NSString* path) {
 	if (qbase.length == 0) qbase = @"Archive";
 	[self addItem:menu title:[NSString stringWithFormat:@"Add to \"%@.7z\"", qbase] action:@selector(fsAddQuick:)].representedObject = @"7z";
 	[self addItem:menu title:[NSString stringWithFormat:@"Add to \"%@.zip\"", qbase] action:@selector(fsAddQuick:)].representedObject = @"zip";
+	[self addItem:menu title:[NSString stringWithFormat:@"Add to \"%@.tgz\"", qbase] action:@selector(fsAddQuick:)].representedObject = @"tgz";
 	[menu addItem:[NSMenuItem separatorItem]];
 	NSMenu* crc = [[NSMenu alloc] initWithTitle:@"CRC SHA"];
 	for (NSString* alg in @[@"CRC32",@"MD5",@"SHA1",@"SHA256",@"SHA384",@"SHA512"]) {
