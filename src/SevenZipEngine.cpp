@@ -47,15 +47,20 @@ typedef Int32 (Z7_STDCALL *Func_CreateObject)(const GUID *clsid, const GUID *iid
 namespace {
 struct FmtId { Byte id; const char* name; };
 const FmtId kFormats[] = {
-	// general archives
+	// general archives (strong, offset-0 signatures)
 	{0x07,"7z"}, {0x01,"zip"}, {0xCC,"rar5"}, {0x03,"rar"},
-	{0xEF,"gzip"}, {0x02,"bzip2"}, {0x0C,"xz"}, {0x05,"z"},
 	{0x08,"cab"}, {0xE1,"xar"}, {0xEB,"rpm"}, {0xEC,"deb"},      // xar fixed (was 0xCB = GPT)
 	{0x04,"arj"}, {0x06,"lzh"}, {0xE9,"chm"}, {0x09,"nsis"}, {0xE5,"compound"},
 	// disk images / filesystems (specific magics → low false-positive)
 	{0xE4,"dmg"}, {0xE3,"hfs"}, {0xC3,"apfs"}, {0xD2,"squashfs"}, {0xD3,"cramfs"},
 	{0xC7,"ext"}, {0xE7,"iso"}, {0xE0,"udf"}, {0xE6,"wim"},
 	{0xC4,"vhdx"}, {0xDC,"vhd"}, {0xC9,"vdi"}, {0xC8,"vmdk"}, {0xCA,"qcow"},
+	// Single-stream compressors LAST among signatured formats. Their handlers scan
+	// up to scanSize for an embedded stream, so they greedily match a compressed
+	// stream INSIDE a container — e.g. an lzma/bzip2-compressed .dmg, or the gzip/xz
+	// payload of an .rpm/.deb. Those containers above must get first crack, or such a
+	// file is misread as xz/bzip2/gzip (one bogus entry) instead of its real format.
+	{0xEF,"gzip"}, {0x02,"bzip2"}, {0x0C,"xz"}, {0x05,"z"},
 	// weak / no signature — keep LAST so they don't shadow the above
 	{0xED,"cpio"}, {0xEE,"tar"},
 };
