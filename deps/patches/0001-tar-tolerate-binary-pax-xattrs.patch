@@ -1,0 +1,117 @@
+Tar: tolerate binary xattr values in pax extended headers (macOS bsdtar)
+
+macOS `tar` (bsdtar) stores extended attributes raw inside pax records --
+notably the auto-applied, non-removable com.apple.provenance xattr, whose
+value contains NUL bytes. Upstream 7-Zip treats any NUL inside a pax
+payload as corruption: ReadDataToBuffer truncates StringSize at the first
+NUL, the pax branch sets Pax_Error, that sets _is_Warning, and
+TarHandlerOut.cpp UpdateItems() then returns E_NOTIMPL -- making every
+macOS-created tar (and therefore .tgz) read-only in NextZip.
+
+Fix: carry the true payload size (CTempBuffer::DataSize) alongside the
+NUL-truncated StringSize, flag Pax_Error only on genuine truncation, and
+have ParsePax skip just the NUL-bearing record (records are
+"len key=value\n", so skipping by the declared length keeps the following
+records parseable). Unmodified entries raw-copy their original headers on
+update, so their xattr records survive; only a replaced entry loses its
+xattr record (its content changed anyway).
+
+Applied by deps/build-7z-engine.sh after extracting the upstream source.
+Written against 7-Zip 26.01. NOTE: upstream sources are CRLF; this patch
+preserves CRLF in its context lines -- do not run it through tools that
+normalize line endings.
+
+diff -ru a/CPP/7zip/Archive/Tar/TarIn.cpp b/CPP/7zip/Archive/Tar/TarIn.cpp
+--- a/CPP/7zip/Archive/Tar/TarIn.cpp	2026-08-19 15:30:59
++++ b/CPP/7zip/Archive/Tar/TarIn.cpp	2026-08-19 15:30:59
+@@ -464,6 +464,10 @@
+ 
+     packSize -= size;
+    
++    // NextZip patch: remember how much real (unaligned) payload the buffer
++    // holds, independent of embedded NUL bytes (macOS bsdtar stores binary
++    // xattr values in pax records).
++    tb.DataSize = (item.PackSize < (UInt64)size) ? (size_t)item.PackSize : size;
+     size_t i;
+     const Byte *p = tb.Buffer;
+     for (i = 0; i < size; i++)
+@@ -653,7 +657,7 @@
+   // CPaxTimes::Clear();
+ 
+   const char *s = (const char *)(const void *)(const Byte *)tb.Buffer;
+-  size_t rem = tb.StringSize;
++  size_t rem = tb.DataSize;   // NextZip patch: full payload, not NUL-truncated
+ 
+   Clear();
+ 
+@@ -680,9 +684,24 @@
+         || s[size - 1] != '\n')
+       return false;
+ 
+-    for (i = offset; i < size; i++)
+-      if (s[i] == 0)
+-        return false;
++    {
++      // NextZip patch: macOS bsdtar stores binary xattrs (e.g. the
++      // non-removable com.apple.provenance) raw in SCHILY.xattr.* records,
++      // so NUL bytes inside a record VALUE are normal on macOS. Failing the
++      // whole pax parse set Pax_Error -> _is_Warning -> UpdateItems E_NOTIMPL,
++      // making every macOS-created tar read-only. Instead, skip just the
++      // NUL-bearing record (kept items raw-copy their headers on update, so
++      // the record survives for unmodified entries).
++      bool hasNul = false;
++      for (i = offset; i < size; i++)
++        if (s[i] == 0) { hasNul = true; break; }
++      if (hasNul)
++      {
++        s += size;
++        rem -= size;
++        continue;
++      }
++    }
+ 
+     for (i = offset; i < size - 1; i++)
+       if (s[i] == '=')
+@@ -938,9 +957,11 @@
+ 
+       item.HeaderSize += item.Get_PackSize_Aligned();
+ 
+-      if (tb->StringSize != item.PackSize
+-          || tb->StringSize == 0
+-          || tb->IsNonZeroTail)
++      // NextZip patch: StringSize stops at the first NUL, but bsdtar pax
++      // records legally carry binary xattr values. Flag an error only when
++      // the payload could not be fully buffered.
++      if (tb->DataSize != item.PackSize
++          || tb->DataSize == 0)
+         item.Pax_Error = true;
+ 
+       item.Num_Pax_Records++;
+@@ -1011,7 +1032,7 @@
+   
+   error = k_ErrorType_OK;
+   
+-  if (PaxBuf.StringSize != 0)
++  if (PaxBuf.DataSize != 0)
+   {
+     CPaxInfo paxInfo;
+     if (!paxInfo.ParsePax(PaxBuf, true))
+diff -ru a/CPP/7zip/Archive/Tar/TarIn.h b/CPP/7zip/Archive/Tar/TarIn.h
+--- a/CPP/7zip/Archive/Tar/TarIn.h	2026-08-19 15:30:59
++++ b/CPP/7zip/Archive/Tar/TarIn.h	2026-08-19 15:30:59
+@@ -23,6 +23,7 @@
+ {
+   CByteBuffer Buffer;
+   size_t StringSize; // num characters before zero Byte (StringSize <= item.PackSize)
++  size_t DataSize;   // NextZip patch: real payload bytes in Buffer (may contain NULs)
+   bool IsNonZeroTail;
+   bool StringSize_IsConfirmed;
+ 
+@@ -36,6 +37,7 @@
+   void Init()
+   {
+     StringSize = 0;
++    DataSize = 0;
+     IsNonZeroTail = false;
+     StringSize_IsConfirmed = false;
+   }

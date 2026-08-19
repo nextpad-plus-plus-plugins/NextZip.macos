@@ -4,12 +4,18 @@
 # at runtime and calls CreateObject / IInArchive / IOutArchive.
 #
 # The 7-Zip source (deps/7zip/) is NOT vendored in git — it is fetched on first
-# build from 7-zip.org and sha256-verified. The macOS makefiles (cmpl_mac_*.mak,
-# var_mac_*.mak, warn_clang_mac.mak) are part of upstream 7-Zip, so no patching
-# is needed. arm64 uses the in-tree native assembly; x86_64 falls back to pure C
-# unless NASM is installed (the .asm files are MASM/NASM dialect).
+# build from 7-zip.org and sha256-verified, then local patches from
+# deps/patches/*.patch are applied (idempotently, so re-runs are safe). The
+# macOS makefiles (cmpl_mac_*.mak, var_mac_*.mak, warn_clang_mac.mak) are part
+# of upstream 7-Zip. arm64 uses the in-tree native assembly; x86_64 falls back
+# to pure C unless NASM is installed (the .asm files are MASM/NASM dialect).
 set -e
 export PATH="/opt/homebrew/bin:$PATH"
+# Pin the min deployment target: without this clang defaults to the build
+# machine's SDK version (e.g. 26.x), stamping a minos that refuses to load on
+# every older macOS — the exact bug of NextZip issue #1. Keep in sync with
+# CMAKE_OSX_DEPLOYMENT_TARGET in CMakeLists.txt.
+export MACOSX_DEPLOYMENT_TARGET="11.0"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/7zip"
 BUNDLE="$SRC/CPP/7zip/Bundles/Format7zF"
@@ -28,6 +34,29 @@ if [ ! -f "$BUNDLE/makefile" ]; then
 	mkdir -p "$SRC"
 	tar -xf "$TMP/$SZ_TARBALL" -C "$SRC"
 	echo "[7z] extracted to $SRC"
+fi
+
+# ── apply local patches (idempotent — safe on an already-patched tree) ─────────
+# Patch context lines are CRLF to match upstream sources; keep them that way.
+PATCHED=0
+for P in "$HERE"/patches/*.patch; do
+	[ -e "$P" ] || continue
+	if patch -p1 -d "$SRC" -N --dry-run < "$P" >/dev/null 2>&1; then
+		echo "[7z] applying $(basename "$P")"
+		patch -p1 -d "$SRC" -N < "$P"
+		PATCHED=1
+	elif patch -p1 -d "$SRC" -R --dry-run < "$P" >/dev/null 2>&1; then
+		echo "[7z] $(basename "$P") already applied — skipping"
+	else
+		echo "[7z] ERROR: $(basename "$P") does not apply to 7-Zip ${SZ_VER}" >&2
+		exit 1
+	fi
+done
+# 7-Zip's makefiles have no header dependency tracking: after a fresh patch
+# (which may touch headers) stale objects can mis-size structs and crash.
+if [ "$PATCHED" = "1" ] && [ -d "$BUNDLE/b" ]; then
+	echo "[7z] patches changed sources — cleaning previous objects"
+	rm -rf "$BUNDLE/b"
 fi
 
 x86_asm_flag="USE_ASM="
