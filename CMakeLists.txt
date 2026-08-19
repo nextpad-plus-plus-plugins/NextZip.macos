@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(NextZip VERSION 1.0.0 LANGUAGES C CXX OBJCXX)
+project(NextZip VERSION 1.0.1 LANGUAGES C CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "" FORCE)
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
 if(NOT CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
 endif()
@@ -77,7 +77,7 @@ endif()
 #  Target 2 — NextZip.app (standalone macOS app, same core)
 # ─────────────────────────────────────────────────────────────────────────────
 if(NEXTZIP_BUILD_APP)
-  set(NEXTZIP_APP_VERSION "1.0.0")
+  set(NEXTZIP_APP_VERSION "1.0.1")
 
   set(APP_SHELL_SOURCES
     shell-app/main.mm

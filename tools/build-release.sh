@@ -90,7 +90,7 @@ if [ -z "$NO_ICON" ]; then
             --app-icon nzip \
             --output-partial-info-plist "$CAR_TMP/partial.plist" \
             --platform macosx \
-            --minimum-deployment-target 12.0 \
+            --minimum-deployment-target 11.0 \
             --target-device mac >/dev/null 2>&1 || warn "actool failed — keeping committed Assets.car"
         if [ -f "$CAR_TMP/Assets.car" ]; then
             cp -f "$CAR_TMP/Assets.car" "$PROJECT_DIR/resources/Assets.car"
@@ -128,7 +128,7 @@ cd "$BUILD_DIR"
 cmake "$PROJECT_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
     -DNEXTZIP_BUILD_PLUGIN=OFF \
     -DNEXTZIP_BUILD_APP=ON \
     >/dev/null
