@@ -19,3 +19,6 @@ deps/7z.so
 /tmp/
 
 .DS_Store
+
+# Release zips (also attached to GitHub releases)
+dist/
