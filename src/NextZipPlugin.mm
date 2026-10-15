@@ -20,6 +20,17 @@ static const int   NB_FUNC = 5;
 static FuncItem    funcItem[NB_FUNC];
 static NppData     nppData;
 
+// NPPM_DMM_SETPANELINFO (host ≥ 1.1.0) — not yet present in this repo's
+// bundled NppPluginInterfaceMac.h; local copy matches the host header. On
+// older hosts the message returns 0 and is simply ignored.
+#ifndef NPPM_DMM_SETPANELINFO
+typedef struct NppPanelInfo {
+	const char *moduleName;   /* plugin folder/module name */
+	int32_t     cmdIndex;     /* FuncItem index of the show/toggle command */
+} NppPanelInfo;
+#define NPPM_DMM_SETPANELINFO (NPPMSG + 505)
+#endif
+
 // ── host bridge: routes the controller's host calls to Nextpad++ ────────────────
 @interface NextZipPluginHost : NSObject <NextZipHost>
 @property (nonatomic, weak) NextZipController* controller;
@@ -49,6 +60,16 @@ static NppData     nppData;
 	if (v)   // host strong-retains the view
 		self.panelHandle = (void*)nppData._sendMessage(nppData._nppHandle,
 			NPPM_DMM_REGISTERPANEL, (uintptr_t)v, (intptr_t)"NextZip");
+	if (self.panelHandle) {
+		// Declare restore metadata so a panel visible at quit reopens at the
+		// next launch via "Show NextZip Archive Manager" (cmdIndex 0 — a
+		// plain toggle, no side effects).
+		NppPanelInfo info;
+		info.moduleName = "NextZip";
+		info.cmdIndex   = 0;
+		nppData._sendMessage(nppData._nppHandle, NPPM_DMM_SETPANELINFO,
+			(uintptr_t)self.panelHandle, (intptr_t)&info);
+	}
 }
 
 - (void)nextZipRevealPanel {
